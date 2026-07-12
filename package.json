@@ -1,7 +1,7 @@
 {
   "name": "harnessgap",
-  "version": "0.0.0",
-  "description": "Stateless detection-only CLI for harness gaps",
+  "version": "0.1.0",
+  "description": "Stateless detection-only CLI that finds harness gaps in Claude Code transcripts",
   "type": "module",
   "engines": {
     "node": ">=22"
@@ -9,6 +9,9 @@
   "bin": {
     "harnessgap": "dist/cli.js"
   },
+  "files": [
+    "dist"
+  ],
   "scripts": {
     "build": "tsc",
     "dev": "tsx src/cli.ts",
