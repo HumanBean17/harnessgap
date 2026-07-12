@@ -1,14 +1,16 @@
-// §11 egress audit: assert no src/**/*.ts file imports a network module.
-// This is the automated egress guard — the CLI must be stateless and offline.
-// Forbidden specifiers: http, https, net, node:net (and node: variants of
-// http/https), undici, fetch. Allowed: node:fs, node:path, node:process,
-// node:child_process, node:os, node:url, commander, yaml, and relative ./ paths.
+// §11 egress audit: assert no src/**/*.ts file imports a network module or
+// invokes the global fetch. This is the automated egress guard — the CLI must
+// be stateless and offline. Forbidden specifiers: http, https, net, node:net
+// (and node: variants of http/https), undici, fetch; plus any fetch call (fetch
+// is a Node global, so an import is not required to egress). Allowed: node:fs,
+// node:path, node:process, node:child_process, node:os, node:url, commander,
+// yaml, and relative ./ paths.
 
 import { describe, it, expect } from 'vitest';
 import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { hasForbiddenImport } from '../src/egress.js';
+import { hasForbiddenImport, hasFetchCall, hasForbiddenEgress } from '../src/egress.js';
 
 const SRC_DIR = fileURLToPath(new URL('../src/', import.meta.url));
 
@@ -28,7 +30,7 @@ function listTsFiles(dir: string): string[] {
 }
 
 describe('egress guard (§11 no-network audit)', () => {
-  it('no src/**/*.ts file imports a network module (http/https/net/undici/fetch)', () => {
+  it('no src/**/*.ts file imports a network module or calls fetch()', () => {
     const files = listTsFiles(SRC_DIR);
     // Sanity: the src tree is non-empty (otherwise the guard is vacuous).
     expect(files.length).toBeGreaterThan(0);
@@ -36,7 +38,7 @@ describe('egress guard (§11 no-network audit)', () => {
     const offenders: string[] = [];
     for (const f of files) {
       const src = readFileSync(f, 'utf8');
-      if (hasForbiddenImport(src)) offenders.push(f);
+      if (hasForbiddenEgress(src)) offenders.push(f);
     }
     expect(offenders).toEqual([]);
   });
@@ -82,5 +84,32 @@ describe('FORBIDDEN_IMPORT regex (string fixtures)', () => {
     // static-import nor the side-effect alternative matches. A bare
     // `// import 'http'` WOULD match (errs toward fail) — acceptable per §11.
     expect(hasForbiddenImport(`// do not import from 'http'`)).toBe(false);
+  });
+});
+
+// Unit tests for the global fetch() call detector — closes the blind spot that
+// fetch is a Node global (no import needed to egress). Live in test/ (not
+// scanned by the src/ audit), so the fetch( fixtures here are safe.
+describe('FORBIDDEN_FETCH_CALL regex (string fixtures)', () => {
+  it('matches a fetch call with a URL', () => {
+    expect(hasFetchCall(`fetch('https://example.com')`)).toBe(true);
+  });
+
+  it('matches an awaited fetch call with options', () => {
+    expect(hasFetchCall(`await fetch(url, { method: 'POST' })`)).toBe(true);
+  });
+
+  it('does not match WebFetch (capital F, no word boundary before fetch)', () => {
+    expect(hasFetchCall(`WebFetch('https://x')`)).toBe(false);
+  });
+
+  it('does not match fetched() or myfetch()', () => {
+    expect(hasFetchCall(`fetched()`)).toBe(false);
+    expect(hasFetchCall(`myfetch(url)`)).toBe(false);
+  });
+
+  it('errs toward flagging: a comment containing a fetch call is flagged', () => {
+    // Consistent with the import guard — fail-safe for a security control.
+    expect(hasFetchCall(`// TODO: replace the fetch(url) call`)).toBe(true);
   });
 });

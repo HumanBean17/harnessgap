@@ -28,9 +28,11 @@ function scrubCatalog(s: string): string {
       `${pre}${prefix ?? ''}${key}=${SENTINEL}`,
   );
 
-  // (3) Authorization headers and bare Bearer tokens.
-  s = s.replace(/Authorization:\s*[^\n'"]*/g, `Authorization: ${SENTINEL}`);
-  s = s.replace(/Bearer\s+[A-Za-z0-9._+/=-]+/g, `Bearer ${SENTINEL}`);
+  // (3) Authorization headers and bare Bearer tokens. Case-insensitive: HTTP
+  //     headers are case-insensitive (RFC 7230), so `authorization: bearer`
+  //     must scrub the same as the canonical form.
+  s = s.replace(/Authorization:\s*[^\n'"]*/gi, `Authorization: ${SENTINEL}`);
+  s = s.replace(/Bearer\s+[A-Za-z0-9._+/=-]+/gi, `Bearer ${SENTINEL}`);
 
   // (4) URL-embedded credentials — ://user:pass@, ://token@, or ://:pass@
   //     (empty username, e.g. redis://:s3cr3t@host) → ://***REDACTED***@.

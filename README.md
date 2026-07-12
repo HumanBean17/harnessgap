@@ -23,7 +23,7 @@ npm run build
 node dist/cli.js scan
 ```
 
-Requires Node >= 22.
+Requires Node >= 22.12.
 
 ## Usage
 

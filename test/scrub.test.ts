@@ -17,6 +17,14 @@ describe('scrubCmd — pattern catalog', () => {
     expect(out).not.toContain('abc.def.ghi');
   });
 
+  it('2b. case-insensitive headers: authorization: bearer ... → token gone', () => {
+    // HTTP headers are case-insensitive (RFC 7230); the lowercase form must
+    // also be scrubbed.
+    const out = scrubCmd("curl -H 'authorization: bearer abc.def.ghi'");
+    expect(out).toContain(SENTINEL);
+    expect(out).not.toContain('abc.def.ghi');
+  });
+
   it('3. url creds: https://token@host → token gone, host retained', () => {
     const out = scrubCmd('git clone https://token@github.com/o/r');
     expect(out).toContain(SENTINEL);

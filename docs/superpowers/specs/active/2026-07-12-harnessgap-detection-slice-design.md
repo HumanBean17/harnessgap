@@ -304,7 +304,7 @@ Slice 1 is stateless batch: no hooks in the agent's hot path, no disk writes, no
 
 ## 11. Privacy
 
-- **No network.** No `fetch`/`http`/`https`/`net` imports; a dependency audit confirms no egress. Transcripts never leave the machine.
+- **No network.** No `fetch`/`http`/`https`/`net` imports and no `fetch()` calls (`fetch` is a Node global since 18, so an import is not required to egress); an egress audit on `src/` confirms none. Transcripts never leave the machine.
 - Secret scrubbing happens in the adapter, before events enter the pipeline, using the pattern catalog in §4.
 - No raw message text is stored — only derived flags; output paths are spec-enforced to carry no prose (§4, §9, §10).
 - **Nothing is written to disk by harnessgap.** (OS-level page cache/swap are out of scope and common to any process that reads files; git is invoked via `execFile` with no shell, so no command lands in shell history.)

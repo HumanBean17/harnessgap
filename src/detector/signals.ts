@@ -194,8 +194,11 @@ function computeOscillation(events: NormalizedEvent[], cfg: Config): number {
 
 /**
  * `(last event t − first event t)` in ms / totalEditedLines. `null` when no
- * edit lines were produced. Derivable from events alone (equals envelope
- * duration_ms by construction).
+ * edit lines were produced. Derived from event timestamps only; this can
+ * diverge from `envelope.duration_ms`, which the adapter derives from raw
+ * record timestamps (first..last record). After the tool_use/result merge a
+ * merged tool_call's `t` is the result's timestamp, so the two spans are not
+ * guaranteed equal.
  */
 function computeWallClockPerLine(events: NormalizedEvent[]): number | null {
   let totalEditedLines = 0;
