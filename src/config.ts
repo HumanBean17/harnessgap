@@ -176,7 +176,7 @@ export function loadConfig(path?: string): Config {
   } catch (e) {
     // No path given and default file absent -> fail-open with defaults.
     if (path === undefined && isEnoent(e)) {
-      return DEFAULT_CONFIG;
+      return structuredClone(DEFAULT_CONFIG);
     }
     throw new ConfigError(
       `Cannot read config file: ${path ?? '.harnessgap.yml'}`,
@@ -194,7 +194,7 @@ export function loadConfig(path?: string): Config {
 
   // Empty file -> nothing to override -> defaults.
   if (parsed === null || parsed === undefined) {
-    return DEFAULT_CONFIG;
+    return structuredClone(DEFAULT_CONFIG);
   }
   if (!isPlainObject(parsed)) {
     throw new ConfigError('Config must be a YAML object at the top level');
@@ -208,5 +208,5 @@ export function loadConfig(path?: string): Config {
 
   const merged = deepMerge(DEFAULT_CONFIG, parsed);
   validateConfig(merged);
-  return merged;
+  return structuredClone(merged);
 }

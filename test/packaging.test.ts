@@ -26,12 +26,16 @@ describe('packaging (package.json + runtime dep tree)', () => {
     expect(pkg.bin?.harnessgap).toBe('dist/cli.js');
   });
 
-  it('engines.node declares a major >= 22', () => {
+  it('engines.node declares a floor of >= 22.12 (commander@15 requirement)', () => {
     const range = pkg.engines?.node;
     expect(typeof range).toBe('string');
-    const m = /(\d+)/.exec(range as string);
+    const m = /^>=(\d+)(?:\.(\d+))?/.exec(range as string);
     expect(m).not.toBeNull();
-    expect(Number(m![1])).toBeGreaterThanOrEqual(22);
+    const major = Number(m![1]);
+    const minor = Number(m![2] ?? 0);
+    // commander@15.0.0 requires Node >= 22.12.0; floor must be at least 22.12
+    const floorMinor = major * 100 + minor;
+    expect(floorMinor).toBeGreaterThanOrEqual(2212);
   });
 
   it('files includes dist', () => {

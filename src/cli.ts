@@ -54,7 +54,7 @@ program
   .option('--calibrate', 'emit the calibrate signal view')
   .option('--bootstrap', 'force bootstrap scoring mode')
   .option('--config <path>', 'path to a .harnessgap.yml config file')
-  .option('--claude-dir <path>', 'Claude Code projects directory')
+  .option('--claude-dir <path>', 'Claude Code config directory (contains projects/)')
   .action(async (opts: ScanOpts) => {
     const scanOpts: ScanOptions = {
       repo: opts.repo,

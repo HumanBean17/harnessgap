@@ -75,4 +75,11 @@ describe('detectCorrection — content-based correction heuristic', () => {
       shape: null,
     });
   });
+
+  it('11. curly apostrophe U+2019: "no, don’t change that file" → negation', () => {
+    expect(detectCorrection({ tool: 'edit' }, 'no, don’t change that file')).toEqual({
+      matched: true,
+      shape: 'negation',
+    });
+  });
 });

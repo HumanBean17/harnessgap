@@ -45,6 +45,18 @@ describe('config loader', () => {
     }
   });
 
+  it('loadConfig() returns a copy, not the shared DEFAULT_CONFIG reference', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'harnessgap-ref-'));
+    const originalCwd = process.cwd();
+    try {
+      process.chdir(dir);
+      expect(loadConfig()).not.toBe(DEFAULT_CONFIG);
+    } finally {
+      process.chdir(originalCwd);
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it('loadConfig(path) deep-merges detector.flag_pct: 75, keeping all other defaults', () => {
     const path = writeTmpConfig('detector:\n  flag_pct: 75\n');
     const cfg = loadConfig(path);

@@ -46,7 +46,7 @@ leaderboard of struggle areas.
 | `--calibrate` | Print per-signal distributions (min / p50 / p90 / max) plus active thresholds and scoring mode. Aggregate statistics only — no per-session detail. |
 | `--bootstrap` | Force bootstrap (absolute-threshold) scoring mode instead of percentile. |
 | `--config <path>` | Path to a `.harnessgap.yml` config file. Default: looks for `.harnessgap.yml` in the cwd. |
-| `--claude-dir <path>` | Claude Code projects directory. Default: `~/.claude/projects`. |
+| `--claude-dir <path>` | Claude Code config directory (contains `projects/`). Default: `~/.claude`. |
 | `--version` | Print the harnessgap version and exit. |
 | `--help` | Print help and exit. |
 

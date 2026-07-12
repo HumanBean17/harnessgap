@@ -4,7 +4,7 @@
   "description": "Stateless detection-only CLI that finds harness gaps in Claude Code transcripts",
   "type": "module",
   "engines": {
-    "node": ">=22"
+    "node": ">=22.12"
   },
   "bin": {
     "harnessgap": "dist/cli.js"

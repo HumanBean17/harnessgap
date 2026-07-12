@@ -57,7 +57,7 @@ export function detectCorrection(
   userText: string,
 ): Correction {
   void prevToolCall; // interface contract; not used by this heuristic
-  const text = userText.trim().toLowerCase();
+  const text = userText.trim().toLowerCase().replace(/’/g, "'");
   if (text.length < 3) return NOT_MATCHED;
 
   if (NEGATION_TOKENS.some((t) => startsWithToken(text, t))) {
