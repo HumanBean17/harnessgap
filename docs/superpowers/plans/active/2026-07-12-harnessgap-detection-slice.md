@@ -312,13 +312,14 @@ Run: `git add src/adapter/taxonomy.ts src/adapter/parse.ts test/parse.test.ts &&
 **Interfaces:**
 - Consumes: `normalizeRecord` (Task 5), `NormalizedEnvelope`/`Warnings` types (Task 2).
 - Produces `src/adapter/stream.ts`:
-  - `streamSession(path: string): { envelope: NormalizedEnvelope, warnings: Pick<Warnings,"malformed_lines"|"oversized_lines"|"truncated_sessions"> }` — reads the `.jsonl` file line-by-line (never `slurp`), enforcing:
+  - `streamSession(path: string): { envelope: NormalizedEnvelope, cwd: string, warnings: Pick<Warnings,"malformed_lines"|"oversized_lines"|"truncated_sessions"> }` — reads the `.jsonl` file line-by-line (never `slurp`), enforcing:
     - **Input line cap 1 MB:** lines >1,048,576 bytes are skipped (not parsed), `oversized_lines++`.
     - **Malformed line:** `JSON.parse` throws → skip, `malformed_lines++`. Never throws.
     - **Event cap 5000:** once 5000 events are collected, drop the rest, set `envelope.truncated=true`, `warnings.truncated_sessions=1` (0 otherwise).
     - **Per-session byte cap 50 MB:** stop reading once cumulative bytes read ≥50*1024*1024 (treat as truncated).
     - `envelope.event_count` = number of events actually kept (≤5000).
     - `envelope.session_id` derived from the filename stem; `started_at` = first event `t`; `duration_ms` = last-kept `t` − first `t`; `agent:"claude-code"`; `schema_version:1`; `repo` left empty here (filled by pipeline via git, Task 16).
+    - `cwd` (returned alongside the envelope, NOT stored on it — the envelope schema carries only `repo`): the session's representative cwd = the `cwd` field from the first transcript record that contains one. The pipeline uses it to resolve `repo`.
     - `ctx.prevToolCall` threaded through `normalizeRecord` calls in order.
   - Pure I/O: reads one file, returns one envelope. Deterministic given the file.
 
@@ -488,7 +489,7 @@ Run: `git add src/detector/signals.ts test/signals.part1.test.ts && git commit -
 - Produces (completes `computeSignals`):
   - `abandonment: boolean` — **true** when the last `cfg.areas.tail_fraction` (default 0.25) of events have an explore-ratio ≥ `cfg.areas.explore_ratio_min` (0.8) AND zero edit events in that tail. **Suppressed (forced false)** when `cfg.areas.suppress_abandonment_when_no_exec` is true AND the *whole session* has zero edits AND zero test/build exec calls (a research signature). A "test/build exec" = an `exec` event whose scrubbed `cmd` contains any token from `cfg.areas.test_cmd_patterns` (substring match, case-insensitive).
   - `oscillation: number` — count of cycles matching `edit → test/build-exec(ok=false) → edit-same-file` per file. "Same-file" = exact path string match on `input_digest.files`. A cycle for file F: an `edit` touching F, followed (possibly with other events) by a test/build `exec` with `ok===false`, followed by another `edit` touching F. Count distinct completed cycles per file. **TDD guard:** a red-green sequence `edit → test(ok=false) → test(ok=true)` with no second edit on the same file does NOT count as a cycle (requires the second edit). Test/build exec = `exec` whose `cmd` matches `test_cmd_patterns`.
-  - `wall_clock_per_line_ms: number | null` — `envelope.duration_ms / max(totalEditedLines, 1)`; **null when `totalEditedLines === 0`**.
+  - `wall_clock_per_line_ms: number | null` — `(last event `t` − first event `t`) in ms / max(totalEditedLines, 1)` (this equals `envelope.duration_ms` by Task 6's construction, so `computeSignals` can derive it from `events` alone — no envelope arg needed); **null when `totalEditedLines === 0`**.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -722,7 +723,7 @@ Run: `git add src/aggregate/leaderboard.ts test/leaderboard.test.ts && git commi
 - Produces:
   - `json.ts`: `buildJsonEnvelope(input: { repo: string; mode: ScoringMode; session_count: number; warnings: Warnings; sessions: StruggleRecord[]; areas: AreaRow[] }): JsonOutput` — assembles the `JsonOutput` (Task 2 type). `schema_version:1`.
   - `human.ts`: `formatHuman(input: { repo: string; mode: ScoringMode; sessionCount: number; areas: AreaRow[]; summary: {flagged;unflagged;unlocalized}; warnings: Warnings }): string` — the §8 table: a header line `harnessgap scan — repo: <repo> · <N> sessions · mode: <mode>`, a column-aligned table (`AREA | FLAGGED | MEAN SCORE | TOP SIGNALS`), a summary line `… areas flagged · … unflagged · … unlocalized · bootstrap: <N> sessions` (bootstrap count = number of sessions when mode is bootstrap, else 0), and a warnings line (only integer counts, omit categories that are 0).
-  - `calibrate.ts`: two exports — `buildCalibrateObject(input: { mode; session_count; flag_pct; signals: SignalValues[] }): { mode; session_count; flag_pct; signals: Record<SignalName, {min;p50;p90;max;active_threshold}> }` and `formatCalibrateTable(obj): string` (human table). **Aggregate statistics only** — no per-session values, no commands, no prose. `active_threshold` = the bootstrap threshold for that signal (from `cfg`), or the `flag_pct`-percentile value in percentile mode (computed across sessions). For boolean `abandonment`, min/p50/p90/max are 0/1.
+  - `calibrate.ts`: two exports — `buildCalibrateObject(input: { mode; session_count; flag_pct; signals: SignalValues[]; bootstrap_thresholds: Config["detector"]["bootstrap_thresholds"] }): { mode; session_count; flag_pct; signals: Record<SignalName, {min;p50;p90;max;active_threshold}> }` and `formatCalibrateTable(obj): string` (human table). **Aggregate statistics only** — no per-session values, no commands, no prose. `active_threshold` = the `bootstrap_thresholds[name]` value (bootstrap mode), or the `flag_pct`-percentile value of that signal across sessions (percentile mode). For boolean `abandonment`, min/p50/p90/max are 0/1.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -764,7 +765,7 @@ Run: `git add src/output/json.ts src/output/human.ts src/output/calibrate.ts tes
 - Produces `src/pipeline.ts`:
   - `export interface ScanOptions { repo?: string; since?: string; limit?: number; json?: boolean; calibrate?: boolean; bootstrap?: boolean; configPath?: string; claudeDir?: string }`
   - `export interface ScanResult { output: string; mode: ScoringMode; sessionCount: number; warnings: Warnings; exitCode: 0|1 }`
-  - `runScan(opts: ScanOptions): ScanResult` — orchestrates: load config; `discoverTranscripts`; for each file `streamSession` → envelope; for each envelope resolve `repo` via `resolveToplevel(envelope.cwd)` (cache) and set `envelope.repo`; filter envelopes to `opts.repo` (exact toplevel match) when given, else to the cwd's toplevel; apply `--since` (filter by `started_at` ≥ now−duration) and `--limit` (cap count, after filtering); skip sessions whose cwd is unresolvable (`warnings.unresolvable_cwd++`, `skipped_sessions++`); `runDetector(envelopes, cfg, opts.bootstrap)`; `aggregateAreas`; build the appropriate output (`--calibrate` → calibrate object/table; `--json` → `buildJsonEnvelope`; else `formatHuman`). `--calibrate --json` → the calibrate object JSON-stringified (NOT the scan envelope). `exitCode` 0 always (genuine misconfig raises — caught in cli.ts → non-zero).
+  - `runScan(opts: ScanOptions): ScanResult` — orchestrates: load config; `discoverTranscripts`; for each file `streamSession` → `{ envelope, cwd, warnings }`; resolve `repo` via `resolveToplevel(cwd)` (cache) and set `envelope.repo`; if `cwd` is unresolvable (`resolveToplevel` returns null) skip the session (`warnings.unresolvable_cwd++`, `skipped_sessions++`); filter envelopes to `opts.repo` (exact toplevel match) when given, else to `resolveToplevel(process.cwd())`; apply `--since` (filter by `started_at` ≥ now−duration) and `--limit` (cap count, after filtering); `runDetector(envelopes, cfg, opts.bootstrap)`; `aggregateAreas`; build the appropriate output (`--calibrate` → `buildCalibrateObject({mode, session_count, flag_pct, signals, bootstrap_thresholds: cfg.detector.bootstrap_thresholds})` then `formatCalibrateTable` (or JSON-stringify the object with `--json`); `--json` (without calibrate) → `buildJsonEnvelope`; else `formatHuman`). `--calibrate --json` → the calibrate object JSON-stringified (NOT the scan envelope). `exitCode` 0 always (genuine misconfig raises — caught in cli.ts → non-zero).
   - **No disk writes.** No network.
 
 - [ ] **Step 1: Write the failing tests**
