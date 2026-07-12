@@ -1,0 +1,17 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`snapshot: human leaderboard over fixed corpus > matches the committed snapshot 1`] = `
+"harnessgap scan — repo: <REPO> · 12 sessions · mode: bootstrap
+AREA                             |  FLAGGED |  MEAN SCORE | TOP SIGNALS
+src/util                         |        1 |        29.9 | wall_clock_per_line(1170s), explore_ratio(3.3), corrections(2)
+src/payments                     |        1 |        29.9 | wall_clock_per_line(1430s), corrections(2), explore_ratio(0.0)
+src/billing                      |        1 |        29.9 | wall_clock_per_line(51s), explore_ratio(25.0), reread(5)
+src/auth                         |        1 |        29.9 | wall_clock_per_line(563s), corrections(2), explore_ratio(0.0)
+src/config                       |        1 |        29.9 | wall_clock_per_line(4s), reread(5), corrections(2)
+src/db                           |        1 |        29.9 | wall_clock_per_line(1260s), explore_ratio(10.0), reread(1)
+src/api                          |        1 |        22.4 | wall_clock_per_line(51s), explore_ratio(25.0), abandonment(yes)
+src/research                     |        0 |         0.0 | 
+src/app                          |        0 |         0.0 | 
+src/tdd                          |        0 |         0.0 | 
+7 areas flagged · 5 unflagged · 0 unlocalized · bootstrap: 12 sessions"
+`;
