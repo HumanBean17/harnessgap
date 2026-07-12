@@ -8,6 +8,7 @@ import { describe, it, expect } from 'vitest';
 import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { hasForbiddenImport } from '../src/egress.js';
 
 const SRC_DIR = fileURLToPath(new URL('../src/', import.meta.url));
 
@@ -26,13 +27,6 @@ function listTsFiles(dir: string): string[] {
   return out;
 }
 
-// Matches static imports (`import ... from 'mod'`), dynamic imports
-// (`import('mod')`), and require (`require('mod')`) whose specifier is a
-// network module (with or without the `node:` prefix). Non-greedy so it stays
-// on one line.
-const FORBIDDEN_IMPORT =
-  /(?:import\s+.*?\s+from\s+|import\s*\(\s*|require\s*\(\s*)['"](?:node:)?(?:http|https|net|undici|fetch)['"]/;
-
 describe('egress guard (§11 no-network audit)', () => {
   it('no src/**/*.ts file imports a network module (http/https/net/undici/fetch)', () => {
     const files = listTsFiles(SRC_DIR);
@@ -42,8 +36,51 @@ describe('egress guard (§11 no-network audit)', () => {
     const offenders: string[] = [];
     for (const f of files) {
       const src = readFileSync(f, 'utf8');
-      if (FORBIDDEN_IMPORT.test(src)) offenders.push(f);
+      if (hasForbiddenImport(src)) offenders.push(f);
     }
     expect(offenders).toEqual([]);
+  });
+});
+
+// Unit tests that lock the FORBIDDEN_IMPORT regex behavior against string
+// fixtures (no src/ pollution). Guards against regressions in the multi-line
+// and side-effect import shapes — the gaps a reviewer flagged.
+describe('FORBIDDEN_IMPORT regex (string fixtures)', () => {
+  it('matches single-line static imports', () => {
+    expect(hasForbiddenImport(`import http from 'node:http'`)).toBe(true);
+  });
+
+  it('matches multi-line named imports', () => {
+    const src = `import {\n  http,\n} from 'node:http'`;
+    expect(hasForbiddenImport(src)).toBe(true);
+  });
+
+  it('matches side-effect imports (bare import, no from)', () => {
+    expect(hasForbiddenImport(`import 'http'`)).toBe(true);
+  });
+
+  it('matches dynamic imports', () => {
+    expect(hasForbiddenImport(`await import('net')`)).toBe(true);
+  });
+
+  it('matches require calls', () => {
+    expect(hasForbiddenImport(`require('https')`)).toBe(true);
+  });
+
+  it('matches undici imports', () => {
+    expect(hasForbiddenImport(`import { fetch } from 'undici'`)).toBe(true);
+  });
+
+  it('allows non-network imports', () => {
+    expect(hasForbiddenImport(`import { readFileSync } from 'node:fs'`)).toBe(false);
+    expect(hasForbiddenImport(`import { join } from 'node:path'`)).toBe(false);
+    expect(hasForbiddenImport(`import commander from 'commander'`)).toBe(false);
+  });
+
+  it('does not flag a comment that merely mentions import + from', () => {
+    // `// do not import from 'http'` has only one `from`, so neither the
+    // static-import nor the side-effect alternative matches. A bare
+    // `// import 'http'` WOULD match (errs toward fail) — acceptable per §11.
+    expect(hasForbiddenImport(`// do not import from 'http'`)).toBe(false);
   });
 });
