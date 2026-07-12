@@ -88,10 +88,10 @@ describe('computeSignals — part 1 (explore_ratio, reread, failure_streak, corr
     ];
     const result = computeSignals(events, cfg());
     expect(result.explore_ratio).toBe(1.0);
-    // Stub fields (Task 10 overwrites).
-    expect(result.abandonment).toBe(false);
-    expect(result.oscillation).toBe(0);
-    expect(result.wall_clock_per_line_ms).toBeNull();
+    // Cross-field sanity (real values from Task 10).
+    expect(result.abandonment).toBe(false); // tail has an edit
+    expect(result.oscillation).toBe(0); // no failed test
+    expect(result.wall_clock_per_line_ms).toBe(1); // 10ms / 10 lines
   });
 
   it('2. explore_ratio: zero edits → null', () => {

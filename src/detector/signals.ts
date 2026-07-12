@@ -1,7 +1,5 @@
-// Pure detector signal computation. Task 9 implements four of the seven
-// SignalValues fields; the remaining three are stubbed and overwritten by
-// Task 10. Each field is computed by a small named helper so Task 10 can
-// swap implementations without touching the others.
+// Pure detector signal computation. Each SignalValues field is computed by a
+// small named helper; `computeSignals` assembles them. No I/O, no mutation.
 
 import type { Config, NormalizedEvent, SignalValues, ToolKind } from '../types.js';
 
@@ -17,10 +15,9 @@ export function computeSignals(events: NormalizedEvent[], cfg: Config): SignalVa
     reread: computeReread(events, cfg),
     failure_streak: computeFailureStreak(events),
     corrections: computeCorrections(events, cfg),
-    // Stubs — Task 10 overwrites these.
-    abandonment: false,
-    oscillation: 0,
-    wall_clock_per_line_ms: null,
+    abandonment: computeAbandonment(events, cfg),
+    oscillation: computeOscillation(events, cfg),
+    wall_clock_per_line_ms: computeWallClockPerLine(events),
   };
 }
 
@@ -107,4 +104,114 @@ function computeCorrections(events: NormalizedEvent[], cfg: Config): number {
     }
   }
   return count;
+}
+
+/**
+ * True when the last `tail_fraction` of events is explore-heavy (explore-ratio
+ * ≥ `explore_ratio_min`) with zero edit events. Suppressed (forced false) when
+ * `suppress_abandonment_when_no_exec` is set and the whole session is a
+ * research signature (zero edits AND zero test/build exec calls).
+ */
+function computeAbandonment(events: NormalizedEvent[], cfg: Config): boolean {
+  if (events.length === 0) return false;
+  const tailSize = Math.floor(events.length * cfg.areas.tail_fraction);
+  if (tailSize === 0) return false;
+  const tail = events.slice(events.length - tailSize);
+
+  let tailExploreCount = 0;
+  let tailEditedLines = 0;
+  let tailEditCount = 0;
+  for (const e of tail) {
+    if (e.kind !== 'tool_call' || e.tool === null) continue;
+    if (EXPLORE_TOOLS.has(e.tool)) {
+      tailExploreCount += 1;
+    } else if (e.tool === 'edit') {
+      tailEditCount += 1;
+      tailEditedLines += e.input_digest.lines_changed ?? 0;
+    }
+  }
+  const tailExploreRatio = tailExploreCount / Math.max(tailEditedLines, 1);
+  let abandonment = tailExploreRatio >= cfg.areas.explore_ratio_min && tailEditCount === 0;
+
+  if (abandonment && cfg.areas.suppress_abandonment_when_no_exec) {
+    let wholeSessionEdits = 0;
+    let wholeSessionTestExec = false;
+    for (const e of events) {
+      if (e.kind !== 'tool_call' || e.tool === null) continue;
+      if (e.tool === 'edit') {
+        wholeSessionEdits += 1;
+      } else if (
+        e.tool === 'exec' &&
+        isTestBuildExec(e.input_digest.cmd, cfg.areas.test_cmd_patterns)
+      ) {
+        wholeSessionTestExec = true;
+      }
+    }
+    if (wholeSessionEdits === 0 && !wholeSessionTestExec) {
+      abandonment = false;
+    }
+  }
+  return abandonment;
+}
+
+/**
+ * Count completed `edit → test/build-exec(ok=false) → edit-same-file` cycles
+ * per file. Tracks two sets per file: `pending` (edit seen, awaiting a failed
+ * test) and `failedTestPending` (edit + failed test seen, awaiting a re-edit).
+ * On a failed test/build exec, all pending files move to failedTestPending.
+ * On an edit touching F: if F is in failedTestPending a cycle completes; F then
+ * re-enters pending (a new potential cycle). Exact path-string match.
+ */
+function computeOscillation(events: NormalizedEvent[], cfg: Config): number {
+  const patterns = cfg.areas.test_cmd_patterns;
+  const pending = new Set<string>();
+  const failedTestPending = new Set<string>();
+  let cycles = 0;
+
+  for (const e of events) {
+    if (e.kind !== 'tool_call' || e.tool === null) continue;
+    if (e.tool === 'edit') {
+      for (const f of e.input_digest.files) {
+        if (failedTestPending.has(f)) {
+          cycles += 1;
+          failedTestPending.delete(f);
+        }
+        pending.add(f);
+      }
+    } else if (
+      e.tool === 'exec' &&
+      e.ok === false &&
+      isTestBuildExec(e.input_digest.cmd, patterns)
+    ) {
+      for (const f of pending) {
+        failedTestPending.add(f);
+      }
+      pending.clear();
+    }
+  }
+  return cycles;
+}
+
+/**
+ * `(last event t − first event t)` in ms / totalEditedLines. `null` when no
+ * edit lines were produced. Derivable from events alone (equals envelope
+ * duration_ms by construction).
+ */
+function computeWallClockPerLine(events: NormalizedEvent[]): number | null {
+  let totalEditedLines = 0;
+  for (const e of events) {
+    if (e.kind === 'tool_call' && e.tool === 'edit') {
+      totalEditedLines += e.input_digest.lines_changed ?? 0;
+    }
+  }
+  if (totalEditedLines === 0) return null;
+  const durationMs = Date.parse(events[events.length - 1].t) - Date.parse(events[0].t);
+  return durationMs / totalEditedLines;
+}
+
+/** Case-insensitive substring match of any pattern against a scrubbed cmd. */
+function isTestBuildExec(cmd: string | null, patterns: string[]): boolean {
+  if (cmd === null) return false;
+  const lower = cmd.toLowerCase();
+  return patterns.some((p) => lower.includes(p.toLowerCase()));
 }
