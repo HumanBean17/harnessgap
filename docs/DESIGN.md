@@ -2,11 +2,6 @@
 
 **Design doc, v0.2 — July 2026**
 
-> v0.1 (`docgap`) is archived at `docs/DESIGN-v0.1.md`. v0.2 changes three things: scope widens
-> from "documentation gaps" to **harness gaps** (docs, confusing code, missing tests, config/env
-> drift); knowledge is **routed actively** into context at need rather than indexed passively; and
-> impact is measured as a **read-vs-not-read struggle delta**, making the feedback loop first-class.
-
 ## 1. Problem
 
 Experienced agent users develop an intuition: when the agent burns time exploring or

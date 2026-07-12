@@ -10,7 +10,7 @@
 
 ## Global Constraints
 
-(Copied from spec `docs/superpowers/specs/active/2026-07-12-harnessgap-detection-slice-design.md`. Every task implicitly inherits these.)
+(Copied from spec `docs/superpowers/specs/archive/2026-07-12-harnessgap-detection-slice-design.md`. Every task implicitly inherits these.)
 
 - **Runtime:** Node ≥22 + TypeScript, npm-distributed (`npx harnessgap`), ESM (`"type": "module"`). Bun single-binary deferred.
 - **No network:** no `http`/`https`/`net`/`fetch`/`undici` imports in `src/`; a dependency audit confirms no egress (§11).

@@ -3,7 +3,7 @@
 Internal reference for contributors. Covers the `harnessgap scan` pipeline as
 implemented in `src/`. For user-facing usage see [`../README.md`](../README.md);
 for the design contract see the
-[spec](superpowers/specs/active/2026-07-12-harnessgap-detection-slice-design.md).
+[spec](superpowers/specs/archive/2026-07-12-harnessgap-detection-slice-design.md).
 
 ## 1. Overview
 
@@ -350,8 +350,8 @@ stream errors are skipped and counted, never thrown (`src/adapter/stream.ts:127`
 
 ## 10. Pointers
 
-- [Spec (authoritative)](superpowers/specs/active/2026-07-12-harnessgap-detection-slice-design.md) — §5 scoring, §11 privacy are the contract.
-- [Plan](superpowers/plans/active/2026-07-12-harnessgap-detection-slice.md) — implementation plan.
+- [Spec (authoritative)](superpowers/specs/archive/2026-07-12-harnessgap-detection-slice-design.md) — §5 scoring, §11 privacy are the contract.
+- [Plan](superpowers/plans/archive/2026-07-12-harnessgap-detection-slice.md) — implementation plan.
 - [README](../README.md) — user-facing usage, flags, config defaults, privacy summary.
 - [Consumer guide](CONSUMER_GUIDE.md) — consumer-facing docs.
 
