@@ -5,21 +5,21 @@
 // Categories covered:
 //   1. clean-quick (×3: clean-quick, clean-build, clean-quick-2) — NOT flagged
 //   2. heavy-exploration — flagged [explore_ratio, reread]
-//   3. oscillation — flagged [corrections, wall_clock_per_line] *
-//   4. failure-streak — flagged [corrections, wall_clock_per_line] *
+//   3. oscillation — flagged [corrections, wall_clock_per_line, oscillation]
+//   4. failure-streak — flagged [corrections, wall_clock_per_line, failure_streak]
 //   5. abandonment — flagged [explore_ratio, abandonment]
 //   5b. abandonment suppressed (research) — NOT flagged
 //   6. tdd-red-green — NOT flagged (oscillation must be 0)
 //
 // Plus: reread-heavy, corrections-heavy, slow-wall-clock (extra signal coverage).
 //
-// * NOTE: oscillation and failure_streak signals are always 0 through the real
-// pipeline due to a known detector bug (the exec tool_use event has ok=true;
-// the result event has tool=null — so `e.tool === 'exec' && e.ok === false`
-// never matches). These fixtures still exercise the intended behavioral
-// patterns (edit→test-fail→edit-same-file; consecutive exec fails) and are
-// flagged via working signals. When the bug is fixed, expected_top_signals can
-// be updated to include oscillation / failure_streak.
+// oscillation and failure_streak signals now compute correctly through the real
+// pipeline (the adapter merges tool_use + tool_result into one tool_call event
+// in stream.ts, so `e.tool === 'exec' && e.ok === false` matches failed execs).
+// The oscillation fixture flags via oscillation(2); the failure-streak fixture
+// flags via corrections + wall_clock_per_line (failure_streak=1 due to
+// intervening user_msg events breaking the consecutive-fail streak — the signal
+// counts consecutive exec failures with no other events between them).
 
 import type { SessionSpec, EventSpec } from '../../helpers/builder.js';
 import { reads, readsMulti } from '../../helpers/builder.js';
@@ -90,9 +90,9 @@ export const corpusSessions: SessionSpec[] = [
     ],
   },
 
-  // 5. oscillation — flagged [corrections, wall_clock_per_line] (* signal bug).
+  // 5. oscillation — flagged [corrections, wall_clock_per_line, oscillation].
   // edit→test-fail→edit→test-fail→edit→test-pass. 3 edits (1 line each).
-  // stepMs=130000 → wall_clock=1690000/3≈563333 (trip). corrections=2 (late, trip).
+  // oscillation=2 (2 cycles). stepMs=130000 → wall_clock≈520s (trip). corrections=2 (late, trip).
   {
     name: 'oscillation',
     stepMs: 130000,
@@ -108,9 +108,10 @@ export const corpusSessions: SessionSpec[] = [
     ],
   },
 
-  // 6. failure-streak — flagged [corrections, wall_clock_per_line] (* signal bug).
-  // 3 consecutive exec fails + 1 pass. 1 edit (1 line).
-  // stepMs=130000 → wall_clock=1430000/1=1430000 (trip). corrections=2 (late, trip).
+  // 6. failure-streak — flagged [corrections, wall_clock_per_line, failure_streak].
+  // 3 exec fails (separated by user_msgs) + 1 pass. 1 edit (1 line).
+  // failure_streak=1 (user_msgs break the consecutive-fail streak). corrections=2 (trip).
+  // stepMs=130000 → wall_clock≈1300s (trip).
   {
     name: 'failure-streak',
     stepMs: 130000,
@@ -159,7 +160,7 @@ export const corpusSessions: SessionSpec[] = [
   },
 
   // 9. tdd-red-green — NOT flagged. edit→test(fail)→test(pass). NO second edit.
-  // oscillation=0 (no second edit; also signal bug). No other signals trip.
+  // oscillation=0 (no second edit). No other signals trip.
   {
     name: 'tdd-red-green',
     events: [
@@ -224,8 +225,8 @@ export const corpusLabels: Label[] = [
   { file: 'clean-build', expected_flagged: false, expected_top_signals: [] },
   { file: 'heavy-exploration', expected_flagged: true, expected_top_signals: ['explore_ratio', 'reread'] },
   { file: 'reread-heavy', expected_flagged: true, expected_top_signals: ['reread', 'corrections'] },
-  { file: 'oscillation', expected_flagged: true, expected_top_signals: ['corrections', 'wall_clock_per_line'] },
-  { file: 'failure-streak', expected_flagged: true, expected_top_signals: ['corrections', 'wall_clock_per_line'] },
+  { file: 'oscillation', expected_flagged: true, expected_top_signals: ['corrections', 'wall_clock_per_line', 'oscillation'] },
+  { file: 'failure-streak', expected_flagged: true, expected_top_signals: ['corrections', 'wall_clock_per_line', 'failure_streak'] },
   { file: 'abandonment', expected_flagged: true, expected_top_signals: ['explore_ratio', 'abandonment'] },
   { file: 'abandonment-suppressed', expected_flagged: false, expected_top_signals: [] },
   { file: 'tdd-red-green', expected_flagged: false, expected_top_signals: [] },
