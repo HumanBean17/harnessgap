@@ -99,6 +99,28 @@ describe('scrubCmd — pattern catalog', () => {
     const out = scrubFiles(files);
     expect(out.length).toBe(50);
   });
+
+  it('11. url creds empty-username: redis://:pass@host → pass gone, host retained', () => {
+    const out = scrubCmd('redis-cli redis://:s3cr3t@host:6379');
+    expect(out).toContain(SENTINEL);
+    expect(out).not.toContain('s3cr3t');
+    expect(out).toContain('host:6379');
+  });
+
+  it('12. url creds full: postgres://user:pass@host → pass gone, host retained', () => {
+    const out = scrubCmd('psql postgres://user:pass@host:5432/db');
+    expect(out).toContain(SENTINEL);
+    expect(out).not.toContain('pass');
+    expect(out).toContain('host:5432');
+  });
+
+  it('13. flag secret equals form: --token=val → val gone, --token= retained', () => {
+    const ghp = 'ghp_' + 'a'.repeat(36);
+    const out = scrubCmd('tool --token=' + ghp);
+    expect(out).toContain('--token=');
+    expect(out).toContain(SENTINEL);
+    expect(out).not.toContain(ghp);
+  });
 });
 
 describe('scrubQuery — same catalog', () => {

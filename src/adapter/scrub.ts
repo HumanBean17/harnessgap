@@ -30,11 +30,12 @@ function scrubCatalog(s: string): string {
 
   // (3) Authorization headers and bare Bearer tokens.
   s = s.replace(/Authorization:\s*[^\n'"]*/g, `Authorization: ${SENTINEL}`);
-  s = s.replace(/Bearer\s+[A-Za-z0-9._-]+/g, `Bearer ${SENTINEL}`);
+  s = s.replace(/Bearer\s+[A-Za-z0-9._+/=-]+/g, `Bearer ${SENTINEL}`);
 
-  // (4) URL-embedded credentials — ://user:pass@ or ://token@ → ://***REDACTED***@
-  //     Host/scheme kept.
-  s = s.replace(/(:\/\/)[^\s/@:]+(?::[^\s/@]+)?@/g, `$1${SENTINEL}@`);
+  // (4) URL-embedded credentials — ://user:pass@, ://token@, or ://:pass@
+  //     (empty username, e.g. redis://:s3cr3t@host) → ://***REDACTED***@.
+  //     Host/scheme kept; rejects a bare ://@ with no credential component.
+  s = s.replace(/(:\/\/)(?:[^\s/@:]+(?::[^\s/@]+)?|:[^\s/@]+)@/g, `$1${SENTINEL}@`);
 
   // (5) Flag secrets — -p <val>, -u <user:pass>, --password/--secret/--token/
   //     --api-key/--access-key (case-insensitive). Value redacted, flag kept.
