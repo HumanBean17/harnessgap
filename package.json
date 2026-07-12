@@ -2,6 +2,24 @@
   "name": "harnessgap",
   "version": "0.1.0",
   "description": "Stateless detection-only CLI that finds harness gaps in Claude Code transcripts",
+  "license": "MIT",
+  "author": "Dmitry Teryaev",
+  "homepage": "https://github.com/HumanBean17/harnessgap#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/HumanBean17/harnessgap.git"
+  },
+  "bugs": {
+    "url": "https://github.com/HumanBean17/harnessgap/issues"
+  },
+  "keywords": [
+    "claude-code",
+    "cli",
+    "transcripts",
+    "developer-tools",
+    "observability",
+    "agent-harness"
+  ],
   "type": "module",
   "engines": {
     "node": ">=22.12"

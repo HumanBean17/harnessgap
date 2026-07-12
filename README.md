@@ -9,6 +9,8 @@ This is **Slice 1**: it writes nothing, installs nothing, persists nothing. It
 only prints a leaderboard to stdout. Diagnosis, synthesis, routing, and
 measurement are deferred to later slices.
 
+> **Full manual:** [docs/CONSUMER_GUIDE.md](docs/CONSUMER_GUIDE.md) — output formats, scoring modes, calibration, FAQ. **Internals:** [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+
 ## Install
 
 ```
@@ -118,10 +120,10 @@ The labeled fixture corpus and snapshot test (see `test/corpus.test.ts`,
 
 harnessgap is built to run offline on private transcripts. Five guarantees:
 
-1. **No network.** No `fetch` / `http` / `https` / `net` / `undici` imports
-   anywhere in `src/`. Transcripts never leave the machine. Enforced by
-   `test/egress.test.ts`, which scans every `src/**/*.ts` file for forbidden
-   network imports and runs in CI.
+1. **No network.** No `fetch` / `http` / `https` / `net` / `undici` imports and
+   no `fetch()` calls anywhere in `src/`. Transcripts never leave the machine.
+   Enforced by `test/egress.test.ts`, which scans every `src/**/*.ts` file for
+   forbidden network imports and fetch calls, and runs in CI.
 2. **No disk writes.** harnessgap writes nothing to disk. It reads transcripts
    and prints to stdout. (OS-level page cache/swap are out of scope and common
    to any process that reads files.)
@@ -151,7 +153,7 @@ The audit is locked by `test/packaging.test.ts`, which runs
 `npm ls --all --omit=dev --json` (via `execFile`, no shell) and asserts the
 runtime `dependencies` object has exactly the keys `commander` and `yaml`. The
 `test/egress.test.ts` gate additionally asserts no `src/` file imports a network
-module. Both run in CI.
+module or calls `fetch()`. Both run in CI.
 
 ## Spec
 
