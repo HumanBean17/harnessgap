@@ -266,4 +266,123 @@ describe('aggregateAreas', () => {
     expect(rows[0].mean_score).toBe(0);
     expect(rows[0].top_signals).toEqual([]);
   });
+
+  it('8. weighted-sum (not count): non-unit weights in sessions_total/flagged', () => {
+    // Discriminates weighted-sum from plain count: all existing tests use
+    // weight 1.0. Here A (flagged, w=2.0), B (flagged, w=0.5), C (unflagged,
+    // w=1.0) all touch src/a. sessions_total = 2.0+0.5+1.0 = 3.5 (NOT 3);
+    // sessions_flagged = 2.0+0.5 = 2.5 (NOT 2); mean_score = (90+70)/2 = 80
+    // (flagged only). Fails if `+= area.weight` becomes `+= 1`.
+    const records = [
+      mkRecord({
+        session_id: 's1',
+        flagged: true,
+        score_pct: 90,
+        areas: [{ key: 'src/a', weight: 2.0 }],
+        signals: zeroSignals({ reread: 3 }),
+      }),
+      mkRecord({
+        session_id: 's2',
+        flagged: true,
+        score_pct: 70,
+        areas: [{ key: 'src/a', weight: 0.5 }],
+        signals: zeroSignals({ reread: 3 }),
+      }),
+      mkRecord({
+        session_id: 's3',
+        flagged: false,
+        score_pct: 50,
+        areas: [{ key: 'src/a', weight: 1.0 }],
+        signals: zeroSignals(),
+      }),
+    ];
+    const { rows } = aggregateAreas(records, CFG);
+    expect(rows).toHaveLength(1);
+    expect(rows[0].key).toBe('src/a');
+    expect(rows[0].sessions_total).toBe(3.5);
+    expect(rows[0].sessions_flagged).toBe(2.5);
+    expect(rows[0].mean_score).toBe(80);
+  });
+
+  it('9. top_signals ordered by median value DESCENDING (toEqual, not contains)', () => {
+    // Single flagged record: medians equal its own values. wall_clock=540000
+    // > reread=7 > abandonment=true(1) > 0-counts. Top 3 in that exact order.
+    // Asserts the ORDERED array (existing test 4 only checks presence).
+    const records = [
+      mkRecord({
+        session_id: 's1',
+        flagged: true,
+        score_pct: 90,
+        areas: [{ key: 'src/x', weight: 1.0 }],
+        signals: zeroSignals({
+          reread: 7,
+          wall_clock_per_line_ms: 540000,
+          abandonment: true,
+        }),
+      }),
+    ];
+    const { rows } = aggregateAreas(records, CFG);
+    const displays = rows[0].top_signals.map((t) => t.display);
+    expect(displays).toEqual([
+      'wall_clock_per_line(540s)',
+      'reread(7)',
+      'abandonment(yes)',
+    ]);
+  });
+
+  it('10. a record touching MULTIPLE areas contributes (weighted) to EACH', () => {
+    // One flagged record with two areas. Both src/a (w=0.6) and src/b (w=0.4)
+    // must appear as rows with their respective weighted totals. Fails if only
+    // the first area is processed.
+    const records = [
+      mkRecord({
+        session_id: 's1',
+        flagged: true,
+        score_pct: 80,
+        areas: [
+          { key: 'src/a', weight: 0.6 },
+          { key: 'src/b', weight: 0.4 },
+        ],
+        signals: zeroSignals({ reread: 2 }),
+      }),
+    ];
+    const { rows } = aggregateAreas(records, CFG);
+    const a = rows.find((r) => r.key === 'src/a');
+    const b = rows.find((r) => r.key === 'src/b');
+    expect(a).toBeDefined();
+    expect(b).toBeDefined();
+    expect(a?.sessions_total).toBe(0.6);
+    expect(a?.sessions_flagged).toBe(0.6);
+    expect(b?.sessions_total).toBe(0.4);
+    expect(b?.sessions_flagged).toBe(0.4);
+  });
+
+  it('11. partial-null nullable signal: median of non-null values (not skipped)', () => {
+    // explore_ratio is nullable. Record P (null) + Record Q (0.5), both
+    // flagged, touching src/x. With PARTIAL nulls the signal is NOT skipped —
+    // median of [0.5] (null filtered) = 0.5, display `explore_ratio(0.5)`.
+    // (Only ALL-null would skip it.) Other signals kept zero so explore_ratio
+    // is the distinguishing top signal.
+    const records = [
+      mkRecord({
+        session_id: 's1',
+        flagged: true,
+        score_pct: 80,
+        areas: [{ key: 'src/x', weight: 1.0 }],
+        signals: zeroSignals({ explore_ratio: null }),
+      }),
+      mkRecord({
+        session_id: 's2',
+        flagged: true,
+        score_pct: 80,
+        areas: [{ key: 'src/x', weight: 1.0 }],
+        signals: zeroSignals({ explore_ratio: 0.5 }),
+      }),
+    ];
+    const { rows } = aggregateAreas(records, CFG);
+    const explore = rows[0].top_signals.find((t) => t.name === 'explore_ratio');
+    expect(explore).toBeDefined();
+    expect(explore?.value).toBe(0.5);
+    expect(explore?.display).toBe('explore_ratio(0.5)');
+  });
 });
