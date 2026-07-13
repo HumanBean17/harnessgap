@@ -41,7 +41,7 @@ leaderboard of struggle areas.
 
 | Flag | Description |
 | --- | --- |
-| `--repo <path>` | Filter to sessions whose resolved repo toplevel matches this path. Defaults to the git toplevel of the current working directory. |
+| `--repo <path>` | Filter to sessions whose resolved main-repo root matches this path. The path itself is resolved to the project's main repo, so `--repo <worktree>` or `--repo <subdir>` matches the whole project (main checkout + all worktrees). Defaults to the main repo of the current working directory. |
 | `--since <dur>` | Only sessions started within this lookback, e.g. `30d`, `12h`, `5m`, `10s`. Default: all sessions. |
 | `--limit <n>` | Cap the number of sessions scanned. Useful for fast iteration. |
 | `--json` | Emit the JSON envelope (for piping) instead of the human-readable leaderboard table. |
@@ -134,9 +134,13 @@ harnessgap is built to run offline on private transcripts. Five guarantees:
    counts are emitted. Raw message text, commands, and transcript line content
    never appear in any output path (human table, `--json`, `--calibrate`,
    warnings).
-5. **Sandboxed git.** `git` is invoked via `execFile` with no shell, so no
-   command lands in shell history. Symlinks in transcript directories are
-   rejected.
+5. **Stat-based repo resolution (no git invocation).** The repo for each
+   session is found by walking up from its cwd and `stat`-ing `<ancestor>/.git`
+   — no `git` process is spawned at all, so nothing lands in shell history.
+   Worktree checkouts (`.git` file) resolve up to the main repo (`.git`
+   directory), so a project's main checkout and all worktrees aggregate
+   together, and sessions whose cwd was a since-deleted worktree are recovered.
+   Symlinks in transcript directories are rejected.
 
 ## Dependency egress audit
 

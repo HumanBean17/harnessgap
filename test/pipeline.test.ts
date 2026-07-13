@@ -174,12 +174,14 @@ describe('runScan (pipeline orchestration)', () => {
     expect(result.exitCode).toBe(0);
   });
 
-  it('5. unresolvable cwd → warnings.unresolvable_cwd===1, session skipped, others scanned', async () => {
+  it('5. unresolvable cwd → warnings.unresolvable_cwd===1, NOT double-counted in skipped_sessions', async () => {
     const { repo, claudeDir } = setupUnresolvableFixture();
     const result = await runScan({ repo, claudeDir });
 
     expect(result.warnings.unresolvable_cwd).toBe(1);
-    expect(result.warnings.skipped_sessions).toBe(1);
+    // The specific reason is counted once; skipped_sessions is reserved for
+    // other skip reasons and stays 0 (no double-count in the warnings line).
+    expect(result.warnings.skipped_sessions).toBe(0);
     expect(result.sessionCount).toBe(1);
     expect(result.exitCode).toBe(0);
   });

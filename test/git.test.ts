@@ -1,23 +1,9 @@
-import { describe, it, expect, afterEach, vi } from 'vitest';
-import { mkdtempSync, rmSync, realpathSync } from 'node:fs';
+import { describe, it, expect, afterEach } from 'vitest';
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync, realpathSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { execFileSync, execFile } from 'node:child_process';
-import { resolveToplevel } from '../src/git.js';
-
-// Wrap execFile in a vi.fn that calls through to the real implementation.
-// This is the spy-able surface: src/git.ts calls child_process.execFile (this
-// mock), so we can inspect argv/env. Real execFile still runs — tests 1, 2, 4
-// need real git; test 3 only inspects the call shape.
-vi.mock('node:child_process', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('node:child_process')>();
-  return {
-    ...actual,
-    execFile: vi.fn(actual.execFile) as unknown as typeof actual.execFile,
-  };
-});
-
-const execFileMock = vi.mocked(execFile);
+import { execFileSync } from 'node:child_process';
+import { resolveMainRepo, walkToMainRepo } from '../src/git.js';
 
 const tmpDirs: string[] = [];
 
@@ -29,73 +15,84 @@ function makeTempDir(prefix: string): string {
 }
 
 afterEach(() => {
-  execFileMock.mockClear();
   while (tmpDirs.length) {
-    const dir = tmpDirs.pop()!;
-    rmSync(dir, { recursive: true, force: true });
+    rmSync(tmpDirs.pop()!, { recursive: true, force: true });
   }
 });
 
-describe('resolveToplevel', () => {
-  it('returns the toplevel for a real git repo (realpath)', async () => {
-    const dir = makeTempDir('git');
+describe('resolveMainRepo / walkToMainRepo', () => {
+  it('returns the repo root for a real git repo (realpath)', () => {
+    const dir = makeTempDir('repo');
     execFileSync('git', ['init', dir], { stdio: 'ignore' });
-    const result = await resolveToplevel(dir);
-    // git resolves symlinks (macOS /var -> /private/var), so compare via realpath
+    const result = resolveMainRepo(dir);
     expect(result).toBe(realpathSync(dir));
   });
 
-  it('returns null for a non-git temp dir (no throw)', async () => {
+  it('returns null for a non-git temp dir (no throw)', () => {
     const dir = makeTempDir('nongit');
-    const result = await resolveToplevel(dir);
-    expect(result).toBeNull();
+    expect(resolveMainRepo(dir)).toBeNull();
   });
 
-  it('invokes execFile with the sandboxed argv and env (no shell, rev-parse only)', async () => {
-    const dir = makeTempDir('sandbox');
-    // mock calls through to real execFile; result is null (non-git dir), but
-    // we only assert the call shape here.
-    await resolveToplevel(dir);
-
-    expect(execFileMock).toHaveBeenCalledTimes(1);
-    const [cmd, argv, opts] = execFileMock.mock.calls[0] as unknown as [
-      string,
-      string[],
-      { env: Record<string, string>; windowsHide: boolean },
-      unknown,
-    ];
-
-    expect(cmd).toBe('git');
-    // argv begins with -C <cwd> then the -c sandbox flags
-    expect(argv.slice(0, 2)).toEqual(['-C', dir]);
-    expect(argv).toContain('core.fsmonitor=');
-    expect(argv).toContain('core.pager=cat');
-    expect(argv).toContain('core.hooksPath=');
-    expect(argv).toContain('rev-parse');
-    expect(argv).toContain('--show-toplevel');
-    // never invoke status/diff/log
-    expect(argv).not.toContain('status');
-    expect(argv).not.toContain('diff');
-    expect(argv).not.toContain('log');
-
-    // env sandbox
-    expect(opts.env.GIT_CONFIG_NOSYSTEM).toBe('1');
-    expect(opts.env.GIT_CONFIG_GLOBAL).toBe('/dev/null');
-    expect(opts.windowsHide).toBe(true);
+  it('finds the repo from a subdirectory (walks up)', () => {
+    const dir = makeTempDir('repo');
+    execFileSync('git', ['init', dir], { stdio: 'ignore' });
+    const sub = join(dir, 'src', 'deep', 'nested');
+    mkdirSync(sub, { recursive: true });
+    const real = realpathSync(dir);
+    expect(resolveMainRepo(sub)).toBe(real);
   });
 
-  it('memoizes by cwd when a cache Map is passed (execFile invoked once)', async () => {
+  it('returns null for empty cwd (never falls back to process.cwd)', () => {
+    // Guard: streamSession returns cwd='' when no record carries one. An empty
+    // cwd must NOT resolve to the harness's own repo.
+    expect(resolveMainRepo('')).toBeNull();
+    expect(walkToMainRepo('')).toBeNull();
+  });
+
+  it('skips a worktree `.git` FILE and walks up to the main repo `.git` dir', () => {
+    // Simulate a worktree checkout: a `.git` *file* (gitfile) at the checkout,
+    // and a real `.git` *directory* at the main repo root.
+    const main = makeTempDir('main');
+    mkdirSync(join(main, '.git'), { recursive: true }); // main repo .git dir
+    const worktree = join(main, '.claude', 'worktrees', 'feat-x', 'src');
+    mkdirSync(worktree, { recursive: true });
+    writeFileSync(join(main, '.claude', 'worktrees', 'feat-x', '.git'), 'gitdir: ../../.git/worktrees/feat-x');
+
+    const real = realpathSync(main);
+    // Resolving from inside the worktree returns the MAIN repo, not the worktree.
+    expect(resolveMainRepo(worktree)).toBe(real);
+  });
+
+  it('recovers the main repo when the worktree cwd has been DELETED', () => {
+    // The real failure mode: the worktree dir is gone, but its path is still in
+    // the transcript. Walk-up stat-checks ancestors of the path string and finds
+    // the main repo's `.git` dir.
+    const main = makeTempDir('main');
+    mkdirSync(join(main, '.git'), { recursive: true });
+    const deletedWorktree = join(main, '.claude', 'worktrees', 'gone', 'src');
+
+    const real = realpathSync(main);
+    expect(resolveMainRepo(deletedWorktree)).toBe(real);
+  });
+
+  it('memoizes by cwd when a cache Map is passed (stat invoked once)', () => {
     const dir = makeTempDir('cache');
     execFileSync('git', ['init', dir], { stdio: 'ignore' });
     const real = realpathSync(dir);
 
     const cache = new Map<string, string | null>();
-    const r1 = await resolveToplevel(dir, cache);
-    const r2 = await resolveToplevel(dir, cache);
+    const r1 = resolveMainRepo(dir, cache);
+    const r2 = resolveMainRepo(dir, cache);
 
     expect(r1).toBe(real);
     expect(r2).toBe(real);
     expect(cache.get(dir)).toBe(real);
-    expect(execFileMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('caches null results too (non-repo cwd)', () => {
+    const dir = makeTempDir('norepo');
+    const cache = new Map<string, string | null>();
+    expect(resolveMainRepo(dir, cache)).toBeNull();
+    expect(cache.get(dir)).toBeNull();
   });
 });

@@ -75,9 +75,10 @@ describe('aggregateAreas', () => {
     expect(row.top_signals.length).toBeLessThanOrEqual(3);
     // Only area, so it is first by definition.
     expect(rows[0].key).toBe('src/billing');
-    // Unflagged record still counts toward summary totals.
-    expect(summary.flagged).toBe(2);
-    expect(summary.unflagged).toBe(1);
+    // Summary counts AREAS: src/billing has ≥1 flagged session → 1 flagged area,
+    // 0 unflagged areas; no empty-area records → 0 unlocalized.
+    expect(summary.flagged).toBe(1);
+    expect(summary.unflagged).toBe(0);
     expect(summary.unlocalized).toBe(0);
   });
 
@@ -94,8 +95,9 @@ describe('aggregateAreas', () => {
     const { rows, summary } = aggregateAreas(records, CFG);
     expect(rows).toHaveLength(0);
     expect(summary.unlocalized).toBe(1);
-    // Unlocalized records still count toward flagged/unflagged totals.
-    expect(summary.flagged).toBe(1);
+    // No area rows → 0 flagged/unflagged AREAS (the flagged session has no area,
+    // so it isn't represented in the area-level summary; it's in `unlocalized`).
+    expect(summary.flagged).toBe(0);
     expect(summary.unflagged).toBe(0);
   });
 
@@ -228,8 +230,11 @@ describe('aggregateAreas', () => {
       }),
     ];
     const { rows, summary } = aggregateAreas(records, CFG);
-    expect(summary.flagged).toBe(3);
-    expect(summary.unflagged).toBe(2);
+    // Summary counts AREAS: src/a + src/b each have ≥1 flagged session → 2
+    // flagged areas, 0 unflagged areas. 2 records have empty areas → 2
+    // unlocalized sessions.
+    expect(summary.flagged).toBe(2);
+    expect(summary.unflagged).toBe(0);
     expect(summary.unlocalized).toBe(2);
     expect(rows).toHaveLength(2);
     // src/a: 2 total, 1 flagged, mean 90; src/b: 1 total, 1 flagged, mean 88.
@@ -267,12 +272,11 @@ describe('aggregateAreas', () => {
     expect(rows[0].top_signals).toEqual([]);
   });
 
-  it('8. weighted-sum (not count): non-unit weights in sessions_total/flagged', () => {
-    // Discriminates weighted-sum from plain count: all existing tests use
-    // weight 1.0. Here A (flagged, w=2.0), B (flagged, w=0.5), C (unflagged,
-    // w=1.0) all touch src/a. sessions_total = 2.0+0.5+1.0 = 3.5 (NOT 3);
-    // sessions_flagged = 2.0+0.5 = 2.5 (NOT 2); mean_score = (90+70)/2 = 80
-    // (flagged only). Fails if `+= area.weight` becomes `+= 1`.
+  it('8. integer counts (not weighted-sum): non-unit weights still count 1 per session', () => {
+    // A session touches an area or it doesn't — counts are integers regardless
+    // of area.weight. A (flagged, w=2.0), B (flagged, w=0.5), C (unflagged,
+    // w=1.0) all touch src/a → sessions_total=3, sessions_flagged=2; mean_score
+    // =(90+70)/2 =80 (flagged only). Fails if `+= 1` ever becomes `+= weight`.
     const records = [
       mkRecord({
         session_id: 's1',
@@ -299,8 +303,8 @@ describe('aggregateAreas', () => {
     const { rows } = aggregateAreas(records, CFG);
     expect(rows).toHaveLength(1);
     expect(rows[0].key).toBe('src/a');
-    expect(rows[0].sessions_total).toBe(3.5);
-    expect(rows[0].sessions_flagged).toBe(2.5);
+    expect(rows[0].sessions_total).toBe(3);
+    expect(rows[0].sessions_flagged).toBe(2);
     expect(rows[0].mean_score).toBe(80);
   });
 
@@ -330,10 +334,10 @@ describe('aggregateAreas', () => {
     ]);
   });
 
-  it('10. a record touching MULTIPLE areas contributes (weighted) to EACH', () => {
+  it('10. a record touching MULTIPLE areas contributes to EACH (integer count)', () => {
     // One flagged record with two areas. Both src/a (w=0.6) and src/b (w=0.4)
-    // must appear as rows with their respective weighted totals. Fails if only
-    // the first area is processed.
+    // must appear as rows, each counting this one session once. Fails if only
+    // the first area is processed, or if counts were weighted by area.weight.
     const records = [
       mkRecord({
         session_id: 's1',
@@ -351,10 +355,59 @@ describe('aggregateAreas', () => {
     const b = rows.find((r) => r.key === 'src/b');
     expect(a).toBeDefined();
     expect(b).toBeDefined();
-    expect(a?.sessions_total).toBe(0.6);
-    expect(a?.sessions_flagged).toBe(0.6);
-    expect(b?.sessions_total).toBe(0.4);
-    expect(b?.sessions_flagged).toBe(0.4);
+    expect(a?.sessions_total).toBe(1);
+    expect(a?.sessions_flagged).toBe(1);
+    expect(b?.sessions_total).toBe(1);
+    expect(b?.sessions_flagged).toBe(1);
+  });
+
+  it('12. PERCENTILE mode: explore_ratio renders as <N>th repo percentile (spec §8)', () => {
+    // 4 flagged records, percentile mode, all touching src/x. explore_ratio
+    // values [null, 0.5, 2.0, 5.0] → area median of non-null = 2.0; repo-wide
+    // percentile of 2.0 within [0.5,2.0,5.0] = (1 strictly less)/(3−1)*100 = 50
+    // → display `explore_ratio(50th)`. Counts are all 0 so explore_ratio is the
+    // top signal. value stored is the raw median (2.0).
+    const records = [
+      mkRecord({
+        session_id: 's1',
+        mode: 'percentile',
+        flagged: true,
+        score_pct: 90,
+        areas: [{ key: 'src/x', weight: 1.0 }],
+        signals: zeroSignals({ explore_ratio: null }),
+      }),
+      mkRecord({
+        session_id: 's2',
+        mode: 'percentile',
+        flagged: true,
+        score_pct: 90,
+        areas: [{ key: 'src/x', weight: 1.0 }],
+        signals: zeroSignals({ explore_ratio: 0.5 }),
+      }),
+      mkRecord({
+        session_id: 's3',
+        mode: 'percentile',
+        flagged: true,
+        score_pct: 90,
+        areas: [{ key: 'src/x', weight: 1.0 }],
+        signals: zeroSignals({ explore_ratio: 2.0 }),
+      }),
+      mkRecord({
+        session_id: 's4',
+        mode: 'percentile',
+        flagged: true,
+        score_pct: 90,
+        areas: [{ key: 'src/x', weight: 1.0 }],
+        signals: zeroSignals({ explore_ratio: 5.0 }),
+      }),
+    ];
+    const { rows } = aggregateAreas(records, CFG);
+    const explore = rows[0].top_signals.find((t) => t.name === 'explore_ratio');
+    expect(explore).toBeDefined();
+    expect(explore?.value).toBe(2.0); // raw median preserved on the entry
+    expect(explore?.display).toBe('explore_ratio(50th)');
+    // And it's the first top signal (highest percentile rank; others are 0).
+    expect(rows[0].top_signals[0]?.name).toBe('explore_ratio');
   });
 
   it('11. partial-null nullable signal: median of non-null values (not skipped)', () => {

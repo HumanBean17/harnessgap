@@ -183,7 +183,9 @@ describe('privacy (c): warnings are integers with no path/prose; safety fixtures
 
     const result = await runScan({ repo, claudeDir });
     expect(result.warnings.unresolvable_cwd).toBeGreaterThanOrEqual(1);
-    expect(result.warnings.skipped_sessions).toBeGreaterThanOrEqual(1);
+    // The unresolvable reason is counted once; skipped_sessions is reserved for
+    // other skip reasons (no double-count in the warnings line).
+    expect(result.warnings.skipped_sessions).toBe(0);
     expect(result.sessionCount).toBe(0);
   });
 

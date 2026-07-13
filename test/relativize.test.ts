@@ -1,0 +1,154 @@
+import { describe, it, expect } from 'vitest';
+import {
+  relativizeFilePath,
+  stripWorktreePrefix,
+  relativizeEnvelopeFiles,
+} from '../src/relativize.js';
+import type { NormalizedEnvelope } from '../src/types.js';
+
+const REPO = '/Users/x/code/myrepo';
+
+describe('stripWorktreePrefix', () => {
+  it('strips .claude/worktrees/<name>/ prefix', () => {
+    expect(stripWorktreePrefix('.claude/worktrees/feat-xyz/src/foo.ts')).toBe(
+      'src/foo.ts',
+    );
+  });
+
+  it('strips .agents/worktrees/<name>/ prefix', () => {
+    expect(stripWorktreePrefix('.agents/worktrees/dev-deps-guard/src/x')).toBe(
+      'src/x',
+    );
+  });
+
+  it('strips .git/worktrees/<name>/ prefix', () => {
+    expect(stripWorktreePrefix('.git/worktrees/abc/a.ts')).toBe('a.ts');
+  });
+
+  it('passes a plain repo-relative path through', () => {
+    expect(stripWorktreePrefix('src/billing/charge.ts')).toBe(
+      'src/billing/charge.ts',
+    );
+  });
+
+  it('does NOT strip a real source dir named worktrees (no leading dot-segment)', () => {
+    // `src/worktrees/...` has no leading hidden dir → not a worktree checkout.
+    expect(stripWorktreePrefix('src/worktrees/foo.ts')).toBe(
+      'src/worktrees/foo.ts',
+    );
+  });
+
+  it('passes a worktree root (no trailing path) through unchanged', () => {
+    expect(stripWorktreePrefix('.claude/worktrees/feat-xyz')).toBe(
+      '.claude/worktrees/feat-xyz',
+    );
+  });
+});
+
+describe('relativizeFilePath', () => {
+  it('strips the repoRoot prefix from an absolute path', () => {
+    expect(relativizeFilePath(`${REPO}/src/foo.ts`, REPO)).toBe('src/foo.ts');
+  });
+
+  it('strips repoRoot then a worktree prefix (the real fragmentation case)', () => {
+    // Session cwd was the main repo, but the agent edited a file inside a
+    // worktree checkout. Relativizing against the main repo leaves the worktree
+    // prefix, which must then be stripped so it aggregates with the main copy.
+    expect(
+      relativizeFilePath(`${REPO}/.claude/worktrees/feat-xyz/src/foo.ts`, REPO),
+    ).toBe('src/foo.ts');
+  });
+
+  it('strips a different tooling worktree prefix (.agents)', () => {
+    expect(
+      relativizeFilePath(`${REPO}/.agents/worktrees/dg/src/a.ts`, REPO),
+    ).toBe('src/a.ts');
+  });
+
+  it('passes an already-relative path through (worktree-stripped only)', () => {
+    expect(relativizeFilePath('src/app/main.ts', REPO)).toBe('src/app/main.ts');
+  });
+
+  it('worktree-strips an already-relative worktree path', () => {
+    expect(
+      relativizeFilePath('.claude/worktrees/zz/src/a.ts', REPO),
+    ).toBe('src/a.ts');
+  });
+
+  it('passes an absolute path outside repoRoot through unchanged', () => {
+    expect(relativizeFilePath('/etc/hosts', REPO)).toBe('/etc/hosts');
+  });
+
+  it('handles repoRoot without trailing slash and exact-root file', () => {
+    // repoRoot itself (degenerate) falls back to the original.
+    expect(relativizeFilePath(REPO, REPO)).toBe(REPO);
+  });
+
+  it('with empty repoRoot, still worktree-strips relative paths', () => {
+    expect(relativizeFilePath('.claude/worktrees/zz/src/a.ts', '')).toBe(
+      'src/a.ts',
+    );
+  });
+});
+
+describe('relativizeEnvelopeFiles', () => {
+  function env(files: string[][]): NormalizedEnvelope {
+    return {
+      schema_version: 1,
+      session_id: 's',
+      agent: 'claude-code',
+      repo: REPO,
+      started_at: '',
+      duration_ms: 0,
+      truncated: false,
+      event_count: files.length,
+      events: files.map((fs) => ({
+        t: '',
+        kind: 'tool_call',
+        tool: 'edit',
+        input_digest: {
+          files: fs,
+          cmd: null,
+          query: null,
+          lines_changed: 1,
+        },
+        ok: true,
+        interrupted: false,
+        duration_ms: 0,
+        correction: null,
+      })),
+    };
+  }
+
+  it('relativizes every file across every event in place', () => {
+    const e = env([
+      [`${REPO}/src/a.ts`, `${REPO}/.claude/worktrees/z/src/b.ts`],
+      [`src/c.ts`],
+    ]);
+    relativizeEnvelopeFiles(e, REPO);
+    expect(e.events[0]!.input_digest.files).toEqual(['src/a.ts', 'src/b.ts']);
+    expect(e.events[1]!.input_digest.files).toEqual(['src/c.ts']);
+  });
+
+  it('skips events with no files', () => {
+    const e = env([[]]);
+    relativizeEnvelopeFiles(e, REPO);
+    expect(e.events[0]!.input_digest.files).toEqual([]);
+  });
+
+  it('collapses main + worktree paths onto the same canonical path', () => {
+    // The core aggregation guarantee: the same file in the main checkout and in
+    // any worktree relativizes to the identical string.
+    const main = relativizeFilePath(`${REPO}/src/billing/charge.ts`, REPO);
+    const wt1 = relativizeFilePath(
+      `${REPO}/.claude/worktrees/feat-a/src/billing/charge.ts`,
+      REPO,
+    );
+    const wt2 = relativizeFilePath(
+      `${REPO}/.agents/worktrees/dg/src/billing/charge.ts`,
+      REPO,
+    );
+    expect(wt1).toBe(main);
+    expect(wt2).toBe(main);
+  });
+});
