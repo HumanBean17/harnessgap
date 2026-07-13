@@ -157,4 +157,4 @@ module or calls `fetch()`. Both run in CI.
 
 ## Spec
 
-Full design: [`docs/superpowers/specs/active/2026-07-12-harnessgap-detection-slice-design.md`](docs/superpowers/specs/active/2026-07-12-harnessgap-detection-slice-design.md).
+Full design: [`docs/superpowers/specs/archive/2026-07-12-harnessgap-detection-slice-design.md`](docs/superpowers/specs/archive/2026-07-12-harnessgap-detection-slice-design.md).

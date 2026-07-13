@@ -14,8 +14,8 @@ oscillating edits, abandonment). Slice 1: no writes, no network.
 ### Internal
 
 - [Architecture](docs/ARCHITECTURE.md) — modules, pipeline, event schema, scoring, security
-- [Spec](docs/superpowers/specs/active/2026-07-12-harnessgap-detection-slice-design.md)
-- [Plan](docs/superpowers/plans/active/2026-07-12-harnessgap-detection-slice.md)
+- [Spec](docs/superpowers/specs/archive/2026-07-12-harnessgap-detection-slice-design.md)
+- [Plan](docs/superpowers/plans/archive/2026-07-12-harnessgap-detection-slice.md)
 
 ## Session end
 

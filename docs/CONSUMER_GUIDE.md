@@ -354,5 +354,5 @@ included.
 
 - [README.md](../README.md) — one-page summary (install, flags, config, privacy).
 - [ARCHITECTURE.md](ARCHITECTURE.md) — module map, pipeline, normalized event schema, scoring, security model.
-- [Design spec](superpowers/specs/active/2026-07-12-harnessgap-detection-slice-design.md)
-- [Implementation plan](superpowers/plans/active/2026-07-12-harnessgap-detection-slice.md)
+- [Design spec](superpowers/specs/archive/2026-07-12-harnessgap-detection-slice-design.md)
+- [Implementation plan](superpowers/plans/archive/2026-07-12-harnessgap-detection-slice.md)
