@@ -34,9 +34,10 @@ reuses the adapter and detector verbatim and only adds persistence.
 | --- | --- | --- |
 | `src/types.ts` | Shared type catalog. Field names/shapes are contracts pinned to the spec. | `NormalizedEvent`, `NormalizedEnvelope`, `SignalValues`, `StruggleRecord`, `AreaRow`, `JsonOutput`, `Config`, `Warnings`, `SignalName`, `ScoringMode`, `ToolKind`, `EventKind` |
 | `src/config.ts` | Load + validate `.harnessgap.yml`; deep-merge over defaults; parse `--since` durations. | `loadConfig`, `parseDuration`, `DEFAULT_CONFIG`, `ConfigError` |
-| `src/git.ts` | Sandboxed `git rev-parse --show-toplevel` resolver. Memoized by cwd. | `resolveToplevel` |
+| `src/git.ts` | Stat-based MAIN-repo resolver. Walks up from a cwd to the nearest directory `.git` (the main repo; worktrees only hold a `.git` file). No git invocation, no shell. Memoized by cwd. | `resolveMainRepo`, `walkToMainRepo` |
 | `src/walk.ts` | Discover `.jsonl` transcripts under `<claudeDir>/projects/*/*.jsonl`. Rejects symlinks. | `discoverTranscripts`, `defaultClaudeDir` |
-| `src/pipeline.ts` | Thin I/O shell: orchestrates walk → stream → git-resolve → detect → aggregate → output. | `runScan`, `ScanOptions`, `ScanResult` |
+| `src/relativize.ts` | Pure file-path relativization: strip the repo-root prefix, then collapse `<hidden>/worktrees/<name>/` prefixes so the same file across the main checkout and worktrees aggregates into one area. | `relativizeFilePath`, `stripWorktreePrefix`, `relativizeEnvelopeFiles` |
+| `src/pipeline.ts` | Thin I/O shell: orchestrates walk → stream → resolve-main-repo → relativize → detect → aggregate → output. | `runScan`, `ScanOptions`, `ScanResult` |
 | `src/cli.ts` | commander bin entry. Parses args, awaits `runScan`, writes stdout, exits. | `program` (default `scan` command) |
 | `src/egress.ts` | §11 no-network guard: regexes for forbidden imports + `fetch()` calls. Single source of truth shared by the egress audit. | `FORBIDDEN_IMPORT`, `FORBIDDEN_FETCH_CALL`, `hasForbiddenImport`, `hasFetchCall`, `hasForbiddenEgress` |
 | `src/adapter/scrub.ts` | Pattern-catalog secret scrubber (7 rules). No entropy heuristic. | `scrubCmd`, `scrubQuery`, `scrubFiles` |
@@ -57,36 +58,43 @@ reuses the adapter and detector verbatim and only adds persistence.
 ## 3. Pipeline
 
 `runScan` (`src/pipeline.ts:66`) threads the stages together. Async because
-`streamSession` and `resolveToplevel` are async.
+`streamSession` is async.
 
 1. **Config** — `loadConfig(opts.configPath)` (`src/pipeline.ts:68`). `ConfigError`
    propagates to the CLI (non-zero exit); `runScan` never catches it.
 2. **Walk** — `discoverTranscripts(claudeDir)` (`src/pipeline.ts:72`) returns
    sorted `.jsonl` paths + `symlinks_rejected` count. Consumes a claude dir;
    produces file paths (no contents read).
-3. **Adapter** — per file, `streamSession(file)` (`src/pipeline.ts:89`) reads
+3. **Adapter** — per file, `streamSession(file)` (`src/pipeline.ts`) reads
    line-by-line, applies size caps, calls `normalizeRecord` per line, threads
    `ctx.prevToolCall`, and runs `mergeToolCalls`. Produces a
-   `NormalizedEnvelope` + the session's representative `cwd` + warning counts.
-   The adapter stage bundles three sub-steps: **scrub** (in `normalizeRecord`
-   via `scrubCmd`/`scrubQuery`/`scrubFiles`), **parse** (`normalizeRecord`), and
-   **stream** (`streamSession` + `mergeToolCalls`).
-4. **Git-resolve** — `resolveToplevel(cwd, cache)` (`src/pipeline.ts:102`) tags
-   each envelope with its repo toplevel. Empty cwd or unresolved toplevel →
-   `unresolvable_cwd++`, session skipped. A single cache Map is threaded across
-   all sessions (cwd repeats are common).
-5. **Filter** — by repo (`src/pipeline.ts:113-128`), then `--since`
-   (`started_at >= now − duration`), then `--limit` (applied last, after all
-   filtering).
-6. **Detector** — `runDetector(filtered, cfg, forceBootstrap)`
-   (`src/pipeline.ts:150`) computes signals per envelope, scores the whole
-   batch once, localizes areas, assembles `StruggleRecord[]`.
-7. **Aggregate** — `aggregateAreas(records, cfg)` (`src/pipeline.ts:153`)
-   rolls per-session records into per-area `AreaRow[]` + a summary.
-8. **Output** — branch by `--calibrate` / `--json` / human
-   (`src/pipeline.ts:163-193`). `mode` is read from the first record (or
-   `'bootstrap'` when there are none); `outputRepo` is the filtered repo (or
-   `''`).
+   `NormalizedEnvelope` + the session's **distinct `cwds` list** + warning
+   counts. The adapter stage bundles three sub-steps: **scrub** (in
+   `normalizeRecord` via `scrubCmd`/`scrubQuery`/`scrubFiles`), **parse**
+   (`normalizeRecord`), and **stream** (`streamSession` + `mergeToolCalls`).
+4. **Repo resolve** — each distinct cwd is tried in turn through
+   `resolveMainRepo(cwd, cache)` (`src/git.ts`) until one resolves to a main
+   repo; the first success wins. `envelope.repo` is set to the MAIN repo root
+   (so a project's main checkout + all worktrees share one repo value and
+   aggregate). Unresolved → `unresolvable_cwd++`, session skipped (counted
+   once — not double-counted under `skipped_sessions`). A single cache Map is
+   threaded across all sessions.
+5. **Relativize** — `relativizeEnvelopeFiles(envelope, repo)` rewrites every
+   `input_digest.files` path to canonical repo-relative form (strip repo
+   prefix, then collapse worktree checkout prefixes). This is what makes area
+   keys real code areas instead of filesystem paths.
+6. **Filter** — by repo (`--repo` is itself normalized through
+   `resolveMainRepo`, so `--repo <worktree>` or `<subdir>` matches the whole
+   project), then `--since` (`started_at >= now − duration`), then `--limit`
+   (applied last, after all filtering).
+7. **Detector** — `runDetector(filtered, cfg, forceBootstrap)` computes signals
+   per envelope, scores the whole batch once, localizes areas, assembles
+   `StruggleRecord[]`.
+8. **Aggregate** — `aggregateAreas(records, cfg)` rolls per-session records
+   into per-area `AreaRow[]` + a summary.
+9. **Output** — branch by `--calibrate` / `--json` / human. `mode` is read from
+   the first record (or `'bootstrap'` when there are none); `outputRepo` is the
+   filtered repo (or `''`).
 
 ## 4. Normalized event schema v1
 
@@ -96,7 +104,7 @@ verbatim. Envelope:
 ```jsonc
 { "schema_version": 1,
   "session_id": "...", "agent": "claude-code",
-  "repo": "/abs/path/to/repo",          // git toplevel, filled at scan time
+  "repo": "/abs/path/to/repo",          // MAIN repo root, filled at scan time
   "started_at": "ISO8601", "duration_ms": 1234567,
   "events": [ /* NormalizedEvent[] */ ],
   "truncated": false, "event_count": 412 }
@@ -272,21 +280,24 @@ carries only derived signal values and integer counts. Enforced by
 `test/privacy.test.ts` (malformed-prose and secret-shape fixtures through all
 three output modes).
 
-**Sandboxed git.** `resolveToplevel` (`src/git.ts:18`) invokes
-`git -C <cwd> rev-parse --show-toplevel` via `execFile` (no shell, so no
-command lands in shell history), with:
-
-- `GIT_CONFIG_NOSYSTEM=1` and `GIT_CONFIG_GLOBAL=/dev/null`
-  (`src/git.ts:43-47`) — neutralize system/global config.
-- `-c core.fsmonitor= -c core.pager=cat -c core.hooksPath=`
-  (`src/git.ts:33-39`) — neutralize repo-local config that could invoke
-  external programs.
-- `rev-parse` only — no `status`/`diff`/`log` that could trigger fsmonitor or
-  hooks.
-
-`cwd` originates from transcripts (untrusted); the sandbox prevents git from
-invoking external programs via repo-local config. Never throws — returns `null`
-on missing git, missing cwd, or non-repo.
+**Repo resolution (stat-based, no git invocation).** `resolveMainRepo`
+(`src/git.ts`) walks up from a session cwd, `stat`-ing `<ancestor>/.git`, and
+returns the first ancestor whose `.git` is a **directory** (the main-repo
+marker). A worktree checkout's `.git` is a *file* (gitfile), so the walk skips
+it and continues to the main repo — which means a project's main checkout and
+every worktree all resolve to the same main-repo root and aggregate together.
+The same walk recovers sessions whose cwd was a since-deleted worktree: the dir
+is gone but ancestor `.git` directories are `stat`-checked along the path string
+regardless, so the main repo is still found. Empty cwd → `null` (never falls
+back to the harness's own repo). This replaced an earlier sandboxed
+`git rev-parse --show-toplevel`, which returned the *worktree* root (excluding
+worktree sessions from `--repo <main>`) and failed outright for deleted cwds
+(dropping ~74% of sessions on a worktree-heavy repo). Stat-walk spawns no
+process at all, so the previous git-sandbox concerns (env vars, hooks,
+fsmonitor, shell history) are moot; `cwd` is untrusted and only `stat`'d, never
+read or executed. Never throws — returns `null` on missing cwd or no repo
+ancestor. `--repo` is normalized through the same resolver so
+`--repo <worktree>` or `--repo <subdir>` matches the whole project.
 
 **Symlink rejection.** `discoverTranscripts` (`src/walk.ts:37`) never follows
 symlinks two ways: `Dirent.isDirectory()` is false for symlinks-to-dirs, so
@@ -360,10 +371,15 @@ stream errors are skipped and counted, never thrown (`src/adapter/stream.ts:127`
 `harnessgap scan` is a stateless, offline, detection-only pipeline: **walk**
 `~/.claude/projects/*/*.jsonl` → **adapter** (scrub + parse + stream, merging
 `tool_use`+`tool_result` into one `tool_call` event so `tool` and `ok`
-co-occur) → **detector** (7 pure signals + percentile-of-composites scoring
-with a bootstrap fallback for thin history + path-prefix area localization) →
-**aggregate** → **output** (human table / `--json` / `--calibrate`). No
-network, no disk writes, no raw prose in any output. Sandboxed git, symlink
-rejection, and 1 MB / 512 / 50 / 5000 / 50 MB size caps throughout. The
-normalized-event schema and pure detector are zero wasted work when
+co-occur) → **resolve main repo** (stat-walk to directory `.git`; no git
+invocation — unifies main + worktrees + deleted-worktree recovery) →
+**relativize** (repo-root prefix strip + worktree-prefix collapse, so areas are
+real code areas) → **detector** (7 pure signals + percentile-of-composites
+scoring with a bootstrap fallback for thin history + path-prefix area
+localization) → **aggregate** (integer session counts; percentile-rank
+top-signals) → **output** (human table — flagged areas only, aligned — /
+`--json` / `--calibrate`). No network, no disk writes, no raw prose in any
+output. Stat-based repo resolution, symlink rejection, and
+1 MB / 512 / 50 / 5000 / 50 MB size caps throughout. The normalized-event
+schema and pure detector are zero wasted work when
 ingest/diagnosis/routing land in later slices.

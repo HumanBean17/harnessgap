@@ -2,6 +2,7 @@
 // summary + warnings into a column-aligned string. No I/O, no raw prose — only
 // area keys, counts, scores, and signal display strings appear in the output.
 
+import * as os from 'node:os';
 import type { AreaRow, ScoringMode, Warnings } from '../types.js';
 
 /** Inputs to `formatHuman`. */
@@ -43,14 +44,18 @@ export function formatHuman(input: HumanInput): string {
   const lines: string[] = [];
 
   lines.push(
-    `harnessgap scan — repo: ${repo} · ${sessionCount} sessions · mode: ${mode}`,
+    `harnessgap scan — repo: ${tilde(repo)} · ${sessionCount} sessions · mode: ${mode}`,
   );
 
-  if (areas.length === 0) {
+  // Only FLAGGED areas get table rows (spec §8). Unflagged areas are noise;
+  // the summary line reports their count. When nothing is flagged, print a
+  // clear no-flagged-areas line instead of an empty table.
+  const flaggedAreas = areas.filter((a) => a.sessions_flagged > 0);
+  if (flaggedAreas.length === 0) {
     lines.push('No flagged areas.');
   } else {
     lines.push(tableHeader());
-    for (const area of areas) {
+    for (const area of flaggedAreas) {
       lines.push(tableRow(area));
     }
   }
@@ -87,6 +92,15 @@ function tableRow(area: AreaRow): string {
 function fit(s: string, width: number): string {
   if (s.length <= width) return s.padEnd(width);
   return s.slice(0, width - 3) + '...';
+}
+
+/** Replace a `$HOME` prefix with `~` for a shorter, readable repo header. */
+function tilde(repo: string): string {
+  if (repo === '') return '';
+  const home = os.homedir();
+  if (home !== '' && repo === home) return '~';
+  if (home !== '' && repo.startsWith(home + '/')) return '~' + repo.slice(home.length);
+  return repo;
 }
 
 /**

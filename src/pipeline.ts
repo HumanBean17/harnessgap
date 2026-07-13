@@ -1,33 +1,40 @@
 // Stateless scan pipeline — the thin I/O shell that orchestrates walk → stream
-// → git-resolve → detect → aggregate → output. All pure logic lives in the
-// modules it composes; this file threads them together, applies filters, and
-// branches the output form. No disk writes, no network. Async because
-// streamSession and resolveToplevel are async.
+// → resolve-main-repo → relativize → detect → aggregate → output. All pure
+// logic lives in the modules it composes; this file threads them together,
+// applies filters, and branches the output form. No disk writes, no network.
+// Async only because streamSession is async (repo resolution is now stat-based).
 //
 // Filter / mode / output-branching choices (documented here, pinned to the
 // task-16 brief + resolution notes):
 //
-// - repo filter when opts.repo is unset: resolve `resolveToplevel(process.cwd())`.
-//   If it resolves, filter envelopes to that toplevel; if it does NOT resolve
-//   (process.cwd() is not a repo), keep ALL envelopes with a non-empty repo.
+// - repo resolution: `resolveMainRepo` walks up from a session cwd to the
+//   nearest directory `.git` (the main repo; worktrees only hold a `.git`
+//   file). Every session's repo is normalized to its MAIN repo root, so a
+//   project's main checkout and all its worktrees share one repo value and
+//   aggregate together. The session's full `cwds` list is tried in order, so a
+//   session whose representative cwd was a since-deleted worktree still resolves
+//   via an ancestor.
+// - repo filter: `opts.repo` (or process.cwd()'s main repo when unset) is itself
+//   normalized through `resolveMainRepo`, so `--repo <worktree>` or
+//   `--repo <subdir>` matches the whole project.
 // - mode when no records: "bootstrap" (consistent with scoreSessions: 0 sessions
 //   < bootstrap_session_floor → bootstrap).
 // - repo for output: the filtered repo (opts.repo, or the resolved process.cwd()
-//   toplevel, or "" if neither resolves).
+//   repo, or "" if neither resolves).
 // - --since: parseDuration(opts.since) → ms (Infinity → no filter). Filter:
 //   Date.parse(started_at) >= now − sinceMs. Empty/unparseable started_at →
 //   excluded (can't date it).
 // - --limit: applied AFTER all filtering. Negative limits are ignored.
-// - empty cwd (streamSession returned cwd=''): treated as unresolvable
-//   (unresolvable_cwd++, skipped) — resolveToplevel('') would wrongly resolve
-//   process.cwd()'s repo.
+// - empty / unresolvable cwd: counted ONLY under `unresolvable_cwd` (the
+//   specific reason), not double-counted under `skipped_sessions`.
 // - ConfigError from loadConfig / parseDuration is NOT caught here — it
 //   propagates to the CLI for non-zero exit. runScan's exitCode is always 0.
 
 import { loadConfig, parseDuration } from './config.js';
 import { discoverTranscripts, defaultClaudeDir } from './walk.js';
 import { streamSession } from './adapter/stream.js';
-import { resolveToplevel } from './git.js';
+import { resolveMainRepo } from './git.js';
+import { relativizeEnvelopeFiles } from './relativize.js';
 import { runDetector } from './detector/index.js';
 import { aggregateAreas } from './aggregate/leaderboard.js';
 import { buildJsonEnvelope } from './output/json.js';
@@ -86,36 +93,47 @@ export async function runScan(opts: ScanOptions): Promise<ScanResult> {
   const envelopes: NormalizedEnvelope[] = [];
 
   for (const file of files) {
-    const { envelope, cwd, warnings: streamWarnings } = await streamSession(file);
+    const { envelope, cwds, warnings: streamWarnings } = await streamSession(file);
     warnings.malformed_lines += streamWarnings.malformed_lines;
     warnings.oversized_lines += streamWarnings.oversized_lines;
     warnings.truncated_sessions += streamWarnings.truncated_sessions;
 
-    // Empty cwd → can't resolve a repo (resolveToplevel('') would resolve
-    // process.cwd()'s repo, which is wrong). Skip as unresolvable.
-    if (cwd === '') {
+    // No cwd at all → can't resolve a repo. Count under unresolvable_cwd only
+    // (not double-counted under skipped_sessions).
+    if (cwds.length === 0) {
       warnings.unresolvable_cwd += 1;
-      warnings.skipped_sessions += 1;
       continue;
     }
 
-    const toplevel = await resolveToplevel(cwd, cache);
-    if (!toplevel) {
+    // Try each distinct cwd in order until one resolves to a main repo. The
+    // representative cwd is first; if it was a since-deleted worktree, a later
+    // cwd (or the walk-up from the first) usually still finds the main repo.
+    let repo: string | null = null;
+    for (const c of cwds) {
+      repo = resolveMainRepo(c, cache);
+      if (repo !== null) break;
+    }
+    if (repo === null) {
       warnings.unresolvable_cwd += 1;
-      warnings.skipped_sessions += 1;
       continue;
     }
-    envelope.repo = toplevel;
+
+    envelope.repo = repo;
+    // Now that the main repo is known, rewrite file paths to canonical
+    // repo-relative form (strips the repo prefix + collapses worktree checkout
+    // prefixes) so areas are real code areas, not filesystem paths.
+    relativizeEnvelopeFiles(envelope, repo);
     envelopes.push(envelope);
   }
 
-  // 4. Filter by repo.
+  // 4. Filter by repo. Normalize the filter through resolveMainRepo too, so
+  //    `--repo <worktree>` or `--repo <subdir>` resolves to the project's main
+  //    repo and matches every session in it (main + worktrees).
   let filterRepo: string;
   if (opts.repo !== undefined) {
-    filterRepo = opts.repo;
+    filterRepo = resolveMainRepo(opts.repo, cache) ?? '';
   } else {
-    const cwdToplevel = await resolveToplevel(process.cwd(), cache);
-    filterRepo = cwdToplevel ?? '';
+    filterRepo = resolveMainRepo(process.cwd(), cache) ?? '';
   }
 
   let filtered: NormalizedEnvelope[];

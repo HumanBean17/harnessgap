@@ -10,8 +10,5 @@ src/billing                      |        1 |        29.9 | wall_clock_per_line(
 src/config                       |        1 |        29.9 | wall_clock_per_line(4s), reread(5), corrections(2)
 src/db                           |        1 |        29.9 | wall_clock_per_line(1200s), explore_ratio(10.0), reread(1)
 src/api                          |        1 |        22.4 | wall_clock_per_line(50s), explore_ratio(25.0), abandonment(yes)
-src/research                     |        0 |         0.0 | 
-src/app                          |        0 |         0.0 | 
-src/tdd                          |        0 |         0.0 | 
-7 areas flagged · 5 unflagged · 0 unlocalized · bootstrap: 12 sessions"
+7 areas flagged · 3 unflagged · 0 unlocalized · bootstrap: 12 sessions"
 `;

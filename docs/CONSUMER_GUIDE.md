@@ -44,7 +44,7 @@ From inside a git repository that you work on with Claude Code:
 harnessgap scan
 ```
 
-This walks every Claude Code session whose resolved repo toplevel matches the
+This walks every Claude Code session whose resolved main-repo root matches the
 current repo, runs the detector, and prints a leaderboard of struggle areas.
 
 ---
@@ -61,7 +61,7 @@ harnessgap scan [options]
 
 | Flag | Default | Description |
 | --- | --- | --- |
-| `--repo <path>` | git toplevel of the cwd | Filter to sessions whose resolved repo toplevel matches this path. |
+| `--repo <path>` | main repo of the cwd | Filter to sessions whose resolved main-repo root matches this path. The path is itself resolved to the project's main repo, so `--repo <worktree>` or `--repo <subdir>` matches the whole project (main checkout + all worktrees). |
 | `--since <dur>` | all sessions | Only sessions started within this lookback: `30d`, `12h`, `5m`, `10s`. |
 | `--limit <n>` | none | Cap the number of sessions scanned. Useful for fast iteration. |
 | `--json` | off | Emit the JSON envelope instead of the human-readable table. |
@@ -161,9 +161,9 @@ warnings: 2 malformed lines, 1 symlinks rejected
 Columns:
 
 - **AREA** — the path-prefix cluster key (truncated with `...` if longer than the column).
-- **FLAGGED** — number of flagged sessions touching this area (weighted; may be fractional when area weights differ).
+- **FLAGGED** — number of flagged sessions touching this area (an integer count; a session touches an area or it doesn't).
 - **MEAN SCORE** — mean `score_pct` over flagged sessions only.
-- **TOP SIGNALS** — the top contributing signals for that area.
+- **TOP SIGNALS** — up to 3 top contributing signals, formatted `name(value)`: counts as the raw count (`reread(7)`), `explore_ratio` as its repo percentile in percentile mode (`explore_ratio(95th)`) or raw in bootstrap mode, `wall_clock_per_line` as a duration (`540s`), `abandonment` as `yes`/`no`.
 
 The summary line reports flagged / unflagged / unlocalized area counts and the
 bootstrap session count (equal to `session_count` only in bootstrap mode). The
@@ -279,7 +279,7 @@ harnessgap runs offline on private transcripts. Five guarantees:
 2. **No disk writes.** harnessgap writes nothing to disk — it reads transcripts and prints to stdout. (OS-level page cache/swap are out of scope and common to any process that reads files.)
 3. **Pattern-catalog scrubbing.** Secrets are scrubbed in the adapter, before events enter the pipeline, using a fixed pattern catalog (API keys, bearer tokens, private keys, URL-embedded credentials, credential-file paths, known-format tokens). No entropy heuristic — nothing is guessed.
 4. **No raw prose in output.** Only derived signal values, scores, counts, paths, and integer warning counts are emitted. Raw message text, commands, and transcript line content never appear in any output path (human table, `--json`, `--calibrate`, warnings).
-5. **Sandboxed git.** `git` is invoked via `execFile` with no shell (so no command lands in shell history), with `GIT_CONFIG_NOSYSTEM=1`, `GIT_CONFIG_GLOBAL=/dev/null`, and rev-parse only. Symlinks in transcript directories are rejected via `lstat`.
+5. **Stat-based repo resolution (no git invocation).** The repo for each session is found by walking up from its cwd and `stat`-ing `<ancestor>/.git` — no `git` process is spawned at all (so nothing lands in shell history, and the earlier sandbox/env-var concerns are moot). Worktree checkouts (`.git` file) resolve up to the main repo (`.git` directory), so a project's main checkout and all worktrees aggregate together; sessions whose cwd was a since-deleted worktree are recovered the same way. Symlinks in transcript directories are rejected via `lstat`.
 
 ---
 
@@ -320,8 +320,9 @@ The labeled fixture corpus and snapshot test (`test/corpus.test.ts`,
 ## FAQ
 
 **"No sessions found" / `session_count: 0`**
-Check `--repo` (it must match the resolved git toplevel of the sessions, not a
-subdirectory), `--claude-dir` (must be the Claude Code config dir containing
+Check `--repo` (it's resolved to the project's main repo, so a worktree path or
+subdirectory also works — but a path in a totally different project won't match),
+`--claude-dir` (must be the Claude Code config dir containing
 `projects/`, default `~/.claude`), and `--since` (too short a window excludes
 older sessions). Run `harnessgap scan --calibrate` to confirm the session count
 and mode.

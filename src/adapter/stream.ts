@@ -31,13 +31,23 @@ type StreamWarnings = Pick<Warnings, 'malformed_lines' | 'oversized_lines' | 'tr
  */
 export async function streamSession(
   filePath: string,
-): Promise<{ envelope: NormalizedEnvelope; cwd: string; warnings: StreamWarnings }> {
+): Promise<{
+  envelope: NormalizedEnvelope;
+  /** Representative cwd = first distinct cwd seen (empty when none). */
+  cwd: string;
+  /** All distinct cwds seen across records, in first-seen order. The pipeline
+   *  tries each for repo resolution so a session that started in a live dir and
+   *  later moved into a since-deleted worktree still resolves. */
+  cwds: string[];
+  warnings: StreamWarnings;
+}> {
   const events: NormalizedEvent[] = [];
   let malformed_lines = 0;
   let oversized_lines = 0;
   let truncated = false;
   let cumulativeBytes = 0;
   let cwd = '';
+  const cwds: string[] = [];
   // Session span tracked across ALL parsed records (for envelope.duration_ms /
   // started_at), regardless of whether they became kept events. Result records'
   // timestamps are included so the span reflects the full session end-to-end.
@@ -73,10 +83,14 @@ export async function streamSession(
           if (parseOk) {
             if (parsed !== null && typeof parsed === 'object') {
               const rec = parsed as { cwd?: unknown; timestamp?: unknown };
-              // Extract cwd from the first record that carries a non-empty one.
-              if (cwd === '') {
-                const c = rec.cwd;
-                if (typeof c === 'string' && c.length > 0) cwd = c;
+              // Collect EVERY distinct non-empty cwd across records. The
+              // representative `cwd` (first one) preserves the old contract;
+              // the full `cwds` list lets the pipeline recover a repo when the
+              // representative points at a since-deleted worktree.
+              const c = rec.cwd;
+              if (typeof c === 'string' && c.length > 0) {
+                if (cwd === '') cwd = c;
+                if (!cwds.includes(c)) cwds.push(c);
               }
               // Track session span across ALL parsed records (system records,
               // tool_use, tool_result — regardless of whether they became kept
@@ -149,6 +163,7 @@ export async function streamSession(
   return {
     envelope,
     cwd,
+    cwds,
     warnings: {
       malformed_lines,
       oversized_lines,

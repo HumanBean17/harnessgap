@@ -1,10 +1,11 @@
 // Pure area aggregation: rolls per-session StruggleRecords up into per-area
-// AreaRows (weighted counting, mean_score, top_signals) plus a summary.
+// AreaRows (integer session counts, mean_score, top_signals) plus a summary.
 // No I/O, no mutation of inputs.
 
 import type {
   AreaRow,
   Config,
+  ScoringMode,
   SignalName,
   SignalValues,
   StruggleRecord,
@@ -44,19 +45,26 @@ interface AreaAccum {
 /**
  * Aggregate per-session `StruggleRecord`s into per-area `AreaRow`s plus a summary.
  *
- * 1. For each record, for each of its `areas`, add the record (weighted by
- *    `area.weight`) to that area's `sessions_total`; if `flagged`, add to
- *    `sessions_flagged` (weighted).
+ * 1. For each record, for each of its `areas`, count the session once toward
+ *    that area's `sessions_total`; if `flagged`, count once toward
+ *    `sessions_flagged`. Counts are INTEGERS (a session touches an area or it
+ *    doesn't) — the spec's §6/§8 examples show integers, not weighted sums.
  * 2. `mean_score` = average of `score_pct` over flagged records touching the
  *    area (0 if none flagged).
- * 3. `top_signals` (per area, max 3): median raw signal value across the area's
- *    flagged sessions, top 3 by value desc, `display` formatted per kind.
+ * 3. `top_signals` (per area, max 3): the area's representative (median) raw
+ *    value per signal, ranked and formatted by mode (spec §8):
+ *      - percentile mode: ranked by the repo-wide percentile rank of the
+ *        median; `explore_ratio` renders as `<N>th`.
+ *      - bootstrap mode: ranked by raw value; `explore_ratio` renders raw.
+ *      Counts always render as raw, durations as `Ns`/`Nms`, booleans as
+ *      `yes`/`no`.
  * 4. Sort rows by `sessions_flagged` desc, then `mean_score` desc.
- * 5. `summary.unlocalized` = count of records with empty `areas`;
- *    `flagged`/`unflagged` = counts of all records (unlocalized included).
+ * 5. `summary.flagged`/`unflagged` = COUNTS OF AREA ROWS (flagged = any flagged
+ *    session touches it; unflagged = touched only by unflagged sessions).
+ *    `summary.unlocalized` = count of records with empty `areas` (session-level).
  *
- * `cfg` is part of the signature contract but unused in v1 (raw medians; no
- * weighting knobs read). Reserved for future ranking configuration.
+ * `cfg` is part of the signature contract but unused in v1. Reserved for future
+ * ranking configuration.
  */
 export function aggregateAreas(
   records: StruggleRecord[],
@@ -65,13 +73,9 @@ export function aggregateAreas(
   void cfg; // reserved; v1 does not read cfg
 
   const byArea = new Map<string, AreaAccum>();
-  let flagged = 0;
-  let unflagged = 0;
   let unlocalized = 0;
 
   for (const rec of records) {
-    if (rec.flagged) flagged += 1;
-    else unflagged += 1;
     if (rec.areas.length === 0) {
       unlocalized += 1;
       continue;
@@ -88,14 +92,21 @@ export function aggregateAreas(
         };
         byArea.set(area.key, acc);
       }
-      acc.sessionsTotal += area.weight;
+      acc.sessionsTotal += 1;
       if (rec.flagged) {
-        acc.sessionsFlagged += area.weight;
+        acc.sessionsFlagged += 1;
         acc.flaggedScores.push(rec.score_pct);
         acc.flaggedSignals.push(rec.signals);
       }
     }
   }
+
+  // Mode is consistent across all records (scoreSessions picks one for the
+  // batch). Default bootstrap when there are none.
+  const mode: ScoringMode = records[0]?.mode ?? 'bootstrap';
+  // Repo-wide per-signal value arrays, used for percentile-rank selection +
+  // explore_ratio display in percentile mode. Built once across all records.
+  const repoValues = mode === 'percentile' ? buildRepoValueArrays(records) : null;
 
   const rows: AreaRow[] = [];
   for (const acc of byArea.values()) {
@@ -108,7 +119,7 @@ export function aggregateAreas(
       sessions_total: acc.sessionsTotal,
       sessions_flagged: acc.sessionsFlagged,
       mean_score: meanScore,
-      top_signals: topSignalsForArea(acc.flaggedSignals),
+      top_signals: topSignalsForArea(acc.flaggedSignals, mode, repoValues),
     });
   }
 
@@ -119,20 +130,66 @@ export function aggregateAreas(
     return b.mean_score - a.mean_score;
   });
 
-  return { rows, summary: { flagged, unflagged, unlocalized } };
+  // Summary counts AREAS (matching the table), not sessions: `flagged` = area
+  // rows with ≥1 flagged session, `unflagged` = area rows touched only by
+  // unflagged sessions. `unlocalized` stays session-level (sessions with no
+  // area). This keeps the summary line honest about how many area rows the
+  // reader is (not) seeing.
+  const flaggedAreas = rows.filter((r) => r.sessions_flagged > 0).length;
+  const unflaggedAreas = rows.length - flaggedAreas;
+
+  return {
+    rows,
+    summary: { flagged: flaggedAreas, unflagged: unflaggedAreas, unlocalized },
+  };
+}
+
+/**
+ * Per non-boolean signal, the sorted non-null raw values across all records
+ * (the repo session set). Percentile ranks are taken against this distribution.
+ */
+function buildRepoValueArrays(
+  records: StruggleRecord[],
+): Partial<Record<keyof SignalValues, number[]>> {
+  const out: Partial<Record<keyof SignalValues, number[]>> = {};
+  for (const spec of SIGNAL_SPECS) {
+    if (spec.kind === 'boolean') continue;
+    const vals: number[] = [];
+    for (const r of records) {
+      const v = r.signals[spec.field];
+      if (v !== null) vals.push(v as number);
+    }
+    if (vals.length > 0) out[spec.field] = vals.sort((a, b) => a - b);
+  }
+  return out;
+}
+
+/**
+ * Percentile rank of `v` within `values`: `(count strictly less than v) /
+ * (n−1) × 100` when n>1, else 0. Matches scoring.ts' percentileRank semantics.
+ */
+function repoPercentileOf(values: number[] | undefined, v: number): number {
+  if (!values) return 0;
+  const n = values.length;
+  if (n <= 1) return 0;
+  let less = 0;
+  for (const x of values) if (x < v) less += 1;
+  return (less / (n - 1)) * 100;
 }
 
 /**
  * Pick up to 3 top signals for an area from its flagged sessions' signals.
  *
- * For each signal spec: compute the median of its raw value across the flagged
- * sessions (booleans use majority; nullable signals skip when all null). Rank
- * by median value descending (higher = more struggle; `abandonment: true`
- * counts as 1). Take the top 3. Ties preserve `SIGNAL_SPECS` order (stable).
+ * Representative value per signal = median across the area's flagged sessions
+ * (booleans use majority; nullable signals skip when all null). Selection + the
+ * `explore_ratio` display depend on `mode` (spec §8); counts/durations/booleans
+ * render the same in both modes. Ties preserve `SIGNAL_SPECS` order (stable).
  * An area with no flagged sessions yields `[]`.
  */
 function topSignalsForArea(
   flaggedSignals: SignalValues[],
+  mode: ScoringMode,
+  repoValues: Partial<Record<keyof SignalValues, number[]>> | null,
 ): AreaRow['top_signals'] {
   if (flaggedSignals.length === 0) return [];
 
@@ -150,8 +207,8 @@ function topSignalsForArea(
       candidates.push({
         name: spec.name,
         value: med,
-        display: formatDisplay(spec, med),
-        sortKey: med ? 1 : 0,
+        display: formatDisplay(spec, med, mode, 0),
+        sortKey: med ? 1 : 0, // booleans always rank by raw value (spec §8)
       });
       continue;
     }
@@ -161,11 +218,15 @@ function topSignalsForArea(
     if (values.length === 0) continue; // all null → skip this signal
     const med = median(values);
     if (med === null) continue; // unreachable when values.length > 0
+    const pctile =
+      mode === 'percentile' && repoValues
+        ? repoPercentileOf(repoValues[spec.field], med)
+        : 0;
     candidates.push({
       name: spec.name,
       value: med,
-      display: formatDisplay(spec, med),
-      sortKey: med,
+      display: formatDisplay(spec, med, mode, pctile),
+      sortKey: mode === 'percentile' && repoValues ? pctile : med,
     });
   }
 
@@ -193,12 +254,33 @@ function medianBoolean(values: boolean[]): boolean {
   return trues * 2 > values.length;
 }
 
-/** Format a signal median per its kind for the `display` string. */
-function formatDisplay(spec: SignalSpec, value: number | boolean): string {
+/** Ordinal suffix for an integer: 1→1st, 2→2nd, 3→3rd, 11→11th, 95→95th. */
+function ordinal(n: number): string {
+  const s = ['th', 'st', 'nd', 'rd'];
+  const v = n % 100;
+  return `${n}${s[(v - 20) % 10] ?? s[v] ?? s[0]}`;
+}
+
+/**
+ * Format a signal median per its kind for the `display` string.
+ *
+ * - count: `name(<rounded raw>)` (both modes)
+ * - ratio (explore_ratio): percentile mode → `name(<pctile>th)`; bootstrap →
+ *   `name(<raw, 1dp>)`
+ * - duration: `name(<Ns>)` or `name(<Nms>)` (both modes)
+ * - boolean: `name(yes|no)` (both modes)
+ */
+function formatDisplay(
+  spec: SignalSpec,
+  value: number | boolean,
+  mode: ScoringMode,
+  pctile: number,
+): string {
   switch (spec.kind) {
     case 'count':
       return `${spec.name}(${Math.round(value as number)})`;
     case 'ratio':
+      if (mode === 'percentile') return `${spec.name}(${ordinal(Math.round(pctile))})`;
       return `${spec.name}(${(value as number).toFixed(1)})`;
     case 'duration': {
       const ms = value as number;
