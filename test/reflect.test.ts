@@ -19,6 +19,7 @@ import {
   setupTempRepo,
   makeTempDir,
   cleanupTempDirs,
+  writeTranscript,
 } from './helpers/builder.js';
 import type { EventSpec } from './helpers/builder.js';
 import type { ReflectFinding, StopHookOutput } from '../src/types.js';
@@ -169,10 +170,19 @@ describe('runReflect — argument handling', () => {
     await expect(runReflect({ format: 'json' })).rejects.toThrow(/transcript/i);
   });
 
-  it('throws a clear error when latest requested without a transcript (Task 3)', async () => {
-    await expect(runReflect({ latest: true, format: 'json' })).rejects.toThrow(
-      /latest/i,
-    );
+  it('latest resolves instead of throwing once Task 3 implements it', async () => {
+    // --latest with no matching session must fail open (trip:false), not throw.
+    // (Task 2 stubbed this as "not implemented"; Task 3 implements --latest.)
+    const { repo, claudeDir } = setupTempRepo();
+    const result = await runReflect({
+      latest: true,
+      repo,
+      claudeDir,
+      format: 'json',
+    });
+    expect(result.exitCode).toBe(0);
+    const parsed = JSON.parse(result.output) as ReflectFinding;
+    expect(parsed.trip).toBe(false);
   });
 
   it('honors transcript even when latest is also set', async () => {
@@ -188,5 +198,107 @@ describe('runReflect — argument handling', () => {
     });
     const parsed = JSON.parse(result.output) as ReflectFinding;
     expect(parsed.trip).toBe(true);
+  });
+});
+
+describe('runReflect — --latest --repo most-recent-session resolution', () => {
+  // Fixture: one claudeDir holding 3 transcripts for the target repo (distinct
+  // started_at, via distinct startMs) + 1 transcript for a DIFFERENT repo that is
+  // NEWER than all target sessions (proves the repo filter excludes it). Each
+  // session has one read so started_at is set and the session is well-formed.
+  // session_id is the filename stem (writeTranscript's `name`).
+  function setupMultiSession(): {
+    targetRepo: string;
+    claudeDir: string;
+    newest: string;
+    secondNewest: string;
+  } {
+    const target = setupTempRepo();
+    const other = setupTempRepo();
+    const claudeDir = target.claudeDir;
+    const oneRead: EventSpec[] = [{ kind: 'read', file: 'src/a.ts' }];
+    writeTranscript(
+      claudeDir,
+      'proj',
+      't1',
+      mkSession(target.repo, { name: 't1', startMs: 1_000, events: oneRead }),
+    );
+    writeTranscript(
+      claudeDir,
+      'proj',
+      't2',
+      mkSession(target.repo, { name: 't2', startMs: 2_000, events: oneRead }),
+    );
+    writeTranscript(
+      claudeDir,
+      'proj',
+      't3',
+      mkSession(target.repo, { name: 't3', startMs: 3_000, events: oneRead }),
+    );
+    // Other repo, NEWER than every target session → must NOT be picked.
+    writeTranscript(
+      claudeDir,
+      'proj',
+      'o1',
+      mkSession(other.repo, { name: 'o1', startMs: 9_000, events: oneRead }),
+    );
+    return {
+      targetRepo: target.repo,
+      claudeDir,
+      newest: 't3',
+      secondNewest: 't2',
+    };
+  }
+
+  it('returns the newest session for the target repo (not the other repo, not older)', async () => {
+    const { targetRepo, claudeDir, newest } = setupMultiSession();
+    const result = await runReflect({
+      latest: true,
+      repo: targetRepo,
+      claudeDir,
+      format: 'json',
+    });
+    expect(result.exitCode).toBe(0);
+    const parsed = JSON.parse(result.output) as ReflectFinding;
+    expect(parsed.session_id).toBe(newest);
+  });
+
+  it('excludeSession skips the newest and returns the second-newest', async () => {
+    const { targetRepo, claudeDir, newest, secondNewest } = setupMultiSession();
+    const result = await runReflect({
+      latest: true,
+      repo: targetRepo,
+      claudeDir,
+      excludeSession: newest,
+      format: 'json',
+    });
+    expect(result.exitCode).toBe(0);
+    const parsed = JSON.parse(result.output) as ReflectFinding;
+    expect(parsed.session_id).toBe(secondNewest);
+  });
+
+  it('no matching session for the repo → hook-stop yields {} (no throw)', async () => {
+    // target repo has NO transcripts in this claudeDir (only the other repo).
+    const target = setupTempRepo();
+    const other = setupTempRepo();
+    writeTranscript(
+      other.claudeDir,
+      'proj',
+      'o1',
+      mkSession(other.repo, {
+        name: 'o1',
+        startMs: 9_000,
+        events: [{ kind: 'read', file: 'src/a.ts' }],
+      }),
+    );
+    const result = await runReflect({
+      latest: true,
+      repo: target.repo,
+      claudeDir: other.claudeDir,
+      format: 'hook-stop',
+      stopHookActive: false,
+    });
+    expect(result.exitCode).toBe(0);
+    expect(JSON.parse(result.output)).toEqual({});
   });
 });
