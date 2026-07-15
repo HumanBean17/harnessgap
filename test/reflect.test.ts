@@ -363,3 +363,100 @@ describe('runReflect — detector errors fail open to trip:false', () => {
     expect(parsed.trip).toBe(false);
   });
 });
+
+// --- privacy: the reflect path's no-prose guarantee, end-to-end --------------
+//
+// Mirrors the PROSE-absence + primitives-only pattern in test/privacy.test.ts
+// (b) and test/hook.test.ts (7), but drives the FULL runReflect path (real
+// streaming + real detection over a transcript fixture) in BOTH output forms.
+// The hook.test.ts (7) case covers formatStopHookOutput alone with a hand-built
+// record; this one proves the guarantee survives the whole pipeline and the
+// nested StruggleRecord the json finding carries through.
+
+// A prose marker seeded into a USER-MESSAGE field. The adapter consumes the
+// sentence (classifies a correction shape, then discards the text) and it must
+// never reach either output form.
+const REFLECT_PROSE = 'please help me debug the flaky payments webhook retry logic';
+
+// A tripping transcript that ALSO carries prose in a user message: a user prompt
+// (prose), then 1 edit, then 3 consecutive failed execs. The 3 failed execs give
+// failure_streak=3 (bootstrap trip); the large step inflates
+// wall_clock_per_line_ms over its threshold → two signals trip → flagged=true;
+// the edit makes zero_edit=false → trip=true. So hook-stop emits a NON-empty
+// {decision:"block", reason} and json emits a populated finding — the privacy
+// assertions below are non-vacuous (they run against real content, not {}).
+const TRIP_WITH_PROSE_EVENTS: EventSpec[] = [
+  { kind: 'user_text', text: REFLECT_PROSE },
+  { kind: 'edit', file: 'src/payments/webhook.ts', newString: 'retry\n' },
+  { kind: 'exec', cmd: './test.sh', ok: false },
+  { kind: 'exec', cmd: './test.sh', ok: false },
+  { kind: 'exec', cmd: './test.sh', ok: false },
+];
+
+/** Recursively collect every leaf value of a parsed JSON value (objects + arrays descended). */
+function leafValues(v: unknown): unknown[] {
+  if (Array.isArray(v)) return v.flatMap(leafValues);
+  if (v !== null && typeof v === 'object') {
+    return Object.values(v).flatMap(leafValues);
+  }
+  return [v];
+}
+
+describe('runReflect — privacy: transcript prose never leaks; primitives + closed enums only', () => {
+  it('json + hook-stop outputs omit the seeded user-message prose and carry only primitive/enum leaves', async () => {
+    const { repo } = setupTempRepo();
+    const file = writeTempTranscript(
+      mkSession(repo, {
+        name: 'prose-trip',
+        stepMs: 200_000,
+        events: TRIP_WITH_PROSE_EVENTS,
+      }),
+    );
+
+    for (const format of ['json', 'hook-stop'] as const) {
+      const result = await runReflect({ transcript: file, format });
+
+      // (1) Raw output string carries no transcript prose — covers the nested
+      //     record too, not just the top-level fields.
+      expect(
+        result.output.includes(REFLECT_PROSE),
+        `${format}: prose marker leaked into output`,
+      ).toBe(false);
+
+      const parsed: unknown = JSON.parse(result.output);
+
+      // (2) Every leaf value is a primitive (string|number|boolean|null) — no
+      //     nested object/array survives that could hold raw message text. The
+      //     nested StruggleRecord the json finding carries is composed entirely
+      //     of derived primitives.
+      for (const leaf of leafValues(parsed)) {
+        const t = typeof leaf;
+        expect(
+          t === 'string' || t === 'number' || t === 'boolean' || leaf === null,
+          `${format}: non-primitive leaf ${JSON.stringify(leaf)}`,
+        ).toBe(true);
+      }
+
+      if (format === 'hook-stop') {
+        const out = parsed as StopHookOutput;
+        // (3) Closed enum: decision ∈ {undefined, "block"}; reason is a string.
+        expect(out.decision === undefined || out.decision === 'block').toBe(true);
+        expect(out.reason === undefined || typeof out.reason === 'string').toBe(true);
+        // Non-vacuous: this tripping session MUST block (else the assertions
+        // above passed against an empty {}).
+        expect(out.decision).toBe('block');
+        expect(typeof out.reason).toBe('string');
+        expect(out.reason!.length).toBeGreaterThan(0);
+      } else {
+        const finding = parsed as ReflectFinding;
+        // Closed enum: mode (top-level + within record) ∈ ScoringMode.
+        expect(['percentile', 'bootstrap']).toContain(finding.mode);
+        expect(['percentile', 'bootstrap']).toContain(finding.record.mode);
+        expect(finding.schema_version).toBe(1);
+        // Non-vacuous: this session trips.
+        expect(finding.trip).toBe(true);
+        expect(finding.zero_edit).toBe(false);
+      }
+    }
+  });
+});

@@ -32,13 +32,13 @@ reuses the adapter and detector verbatim and only adds persistence.
 
 | File | Responsibility | Key exports |
 | --- | --- | --- |
-| `src/types.ts` | Shared type catalog. Field names/shapes are contracts pinned to the spec. | `NormalizedEvent`, `NormalizedEnvelope`, `SignalValues`, `StruggleRecord`, `AreaRow`, `JsonOutput`, `Config`, `Warnings`, `SignalName`, `ScoringMode`, `ToolKind`, `EventKind` |
+| `src/types.ts` | Shared type catalog. Field names/shapes are contracts pinned to the spec. | `NormalizedEvent`, `NormalizedEnvelope`, `SignalValues`, `StruggleRecord`, `AreaRow`, `JsonOutput`, `Config`, `Warnings`, `SignalName`, `ScoringMode`, `ToolKind`, `EventKind`, `ReflectFinding`, `StopHookOutput`, `ReflectFrame` |
 | `src/config.ts` | Load + validate `.harnessgap.yml`; deep-merge over defaults; parse `--since` durations. | `loadConfig`, `parseDuration`, `DEFAULT_CONFIG`, `ConfigError` |
 | `src/git.ts` | Stat-based MAIN-repo resolver. Walks up from a cwd to the nearest directory `.git` (the main repo; worktrees only hold a `.git` file). No git invocation, no shell. Memoized by cwd. | `resolveMainRepo`, `walkToMainRepo` |
 | `src/walk.ts` | Discover `.jsonl` transcripts under `<claudeDir>/projects/*/*.jsonl`. Rejects symlinks. | `discoverTranscripts`, `defaultClaudeDir` |
 | `src/relativize.ts` | Pure file-path relativization: strip the repo-root prefix, then collapse `<hidden>/worktrees/<name>/` prefixes so the same file across the main checkout and worktrees aggregates into one area. | `relativizeFilePath`, `stripWorktreePrefix`, `relativizeEnvelopeFiles` |
-| `src/pipeline.ts` | Thin I/O shell: orchestrates walk → stream → resolve-main-repo → relativize → detect → aggregate → output. | `runScan`, `ScanOptions`, `ScanResult` |
-| `src/cli.ts` | commander bin entry. Parses args, awaits `runScan`, writes stdout, exits. | `program` (default `scan` command) |
+| `src/pipeline.ts` | Thin I/O shell: orchestrates walk → stream → resolve-main-repo → relativize → detect → aggregate → output. Also hosts `runReflect`, the n=1 session-end analog (see §10). | `runScan`, `ScanOptions`, `ScanResult`, `runReflect`, `ReflectOptions`, `ReflectResult` |
+| `src/cli.ts` | commander bin entry. Parses args, awaits `runScan`/`runReflect`/`initClaude`, writes stdout, exits. | `program` (`scan` default, `reflect`, `init` commands) |
 | `src/egress.ts` | §11 no-network guard: regexes for forbidden imports + `fetch()` calls. Single source of truth shared by the egress audit. | `FORBIDDEN_IMPORT`, `FORBIDDEN_FETCH_CALL`, `hasForbiddenImport`, `hasFetchCall`, `hasForbiddenEgress` |
 | `src/adapter/scrub.ts` | Pattern-catalog secret scrubber (7 rules). No entropy heuristic. | `scrubCmd`, `scrubQuery`, `scrubFiles` |
 | `src/adapter/taxonomy.ts` | Claude Code tool-name → `ToolKind` map. | `mapToolKind` |
@@ -54,6 +54,8 @@ reuses the adapter and detector verbatim and only adds persistence.
 | `src/output/json.ts` | Pure `JsonOutput` envelope assembler for `--json`. | `buildJsonEnvelope` |
 | `src/output/human.ts` | Pure human-readable leaderboard formatter (the default table). | `formatHuman` |
 | `src/output/calibrate.ts` | Pure calibrate builders: per-signal min/p50/p90/max + active threshold, for `--calibrate`. | `buildCalibrateObject`, `formatCalibrateTable` |
+| `src/output/hook.ts` | Pure session-end reflect builders: a `StruggleRecord` → `ReflectFinding` decision + the Claude Code `Stop` hook payload. No I/O, no node builtins; the only Claude-Code-specific code in the tree. | `buildReflectFinding`, `formatStopHookOutput` |
+| `src/init/claude.ts` | `harnessgap init claude` installer: writes the fail-open Stop-hook wrapper, idempotently merges `hooks.Stop` in `.claude/settings.json`, writes the `/reflect` command. Only `node:fs` + `node:path` (the wrapper's `child_process` lives in the emitted runtime artifact under `.claude/`, not in `src/`). | `initClaude` |
 
 ## 3. Pipeline
 
@@ -358,8 +360,87 @@ stream errors are skipped and counted, never thrown (`src/adapter/stream.ts:127`
   from human / `--json` / `--calibrate` / warnings; (c) safety fixtures —
   symlinked transcript rejected, unresolvable cwd skipped, oversized line
   skipped, and all `warnings` fields are integers.
+- **Reflect + init tests** (Slice 3) — `test/hook.test.ts` (pure
+  `buildReflectFinding` + `formatStopHookOutput`, incl. a prose-absent /
+  primitives-only privacy case); `test/reflect.test.ts` (`runReflect`
+  end-to-end over fixtures in both output forms, incl. an end-to-end no-prose
+  privacy case that seeds a marker in a user-message field and asserts it absent
+  + every output leaf is a primitive/enum); `test/init.test.ts` (fail-open
+  wrapper, idempotent settings merge, `/reflect` command); `test/cli.reflect.test.ts`
+  (the `reflect` / `init` CLI wiring).
 
-## 10. Pointers
+## 10. Session-end reflect (`reflect` + `init claude`, Slice 3)
+
+Slice 3 reframes the detector from **batch** to **event-driven**. `harnessgap
+reflect` runs the **single-session** pipeline and emits a `ReflectFinding` (or
+the Claude Code `Stop` hook payload); `harnessgap init claude` installs a
+trip-gated Stop hook + a `/reflect` command. It reuses Slice 1's detector +
+bootstrap mode verbatim — **`StruggleRecord`, the scorer (`scoreSessions`), the
+aggregator (`aggregateAreas`), and `runScan` are untouched, so Slice 1/2
+leaderboard output is byte-identical.** No new config keys, no new runtime deps,
+no new network surface.
+
+### `runReflect` (`src/pipeline.ts`)
+
+The n=1 analog of `runScan`. Two resolution modes feed one shared detect+format
+step:
+
+- **`--transcript <path>`** — stream one given file (the per-stop hook path; cheap).
+- **`--latest --repo <path>`** — discover every transcript under `claudeDir`,
+  keep those whose resolved main repo matches, drop `--exclude-session`, and pick
+  the max-`started_at` (the manual `/reflect` path; same order of cost as scan).
+
+The picked envelope is relativized and run through `runDetector([envelope], cfg,
+true)` (bootstrap forced at n=1), producing one `StruggleRecord`.
+`buildReflectFinding` derives **`trip = record.flagged && !zero_edit`** (`zero_edit`
+= no edit tool call this session) and pins `schema_version: 1`.
+
+Fail-open throughout: a null envelope (`--latest` found nothing), an unresolvable
+repo, **or** a thrown detect step all degrade to a degenerate `trip:false` finding
+— the hook-stop formatter renders `{}`, so the Stop hook never reads a wrapper
+error as a block. Only `loadConfig`/arg errors throw.
+
+### Output forms (`src/output/hook.ts`)
+
+- **`--format json`** — the `ReflectFinding`: `{ schema_version, session_id, repo,
+  mode, record, trip, zero_edit }` (the full `StruggleRecord` is carried through;
+  derived values only — no transcript prose).
+- **`--format hook-stop`** — the Claude Code `Stop` payload: `stop_hook_active`
+  → `{}` (never re-block an active hook); `trip` → `{ decision: "block", reason }`
+  where `reason` is a static reflection prompt + up to 3 top area keys + active
+  signal `name(value)` pairs (derived only); otherwise `{}` (allow the stop).
+
+### `init claude` (`src/init/claude.ts`)
+
+Writes three artifacts under `<cwd>/.claude/`:
+
+1. a **fail-open wrapper** (`harnessgap-stop-hook.js`) — reads stdin,
+   short-circuits on `stop_hook_active` or an empty `transcript_path`, spawns
+   `node <cli> reflect --transcript <tp> --format hook-stop`, and synthesizes `{}`
+   on any fault (a non-zero exit blocks in Claude Code, so every error path must
+   allow). This wrapper is the only place `node:child_process` appears — an
+   emitted runtime artifact under `.claude/`, **not** a file in `src/`, so
+   `test/egress.test.ts` and `test/packaging.test.ts` hold.
+2. an **idempotent `settings.json` merge** — appends `hooks.Stop` with the
+   harnessgap command exactly once (deduped by command string), preserving every
+   other top-level key and Stop entry.
+3. the **`/reflect` command** (`commands/reflect.md`) — agent guidance to fill one
+   `ReflectFrame` (cost / missing context / one change with a path-verified
+   repo-relative `target_path`) from a finding, present it, and emit
+   `change.kind: "none"` when clean. The binary never authors a frame.
+
+### Trip-gate sensitivity (dogfood, not a promise)
+
+`trip = flagged && !zero_edit` reuses the bootstrap flag, which is calibrated for
+the *batch* leaderboard, not a per-session *interruption*. At n=1 it may fire on
+ordinary sessions (e.g. one debug loop hitting `reread` + `wall_clock`). This is
+the top open question (spec §11.1) and a **dogfood gate**: measure trip frequency
+on clean sessions; if too high, tighten via one of the spec's levers (drop the
+`≥ 2 signals` disjunction / raise to `≥ k` signals / a dedicated
+`detector.reflect` block). See [`CONSUMER_GUIDE.md`](CONSUMER_GUIDE.md)
+"Session-end reflect".
+
+## 11. Pointers
 
 - [Spec (authoritative)](superpowers/specs/archive/2026-07-12-harnessgap-detection-slice-design.md) — §5 scoring, §11 privacy are the contract.
 - [Plan](superpowers/plans/archive/2026-07-12-harnessgap-detection-slice.md) — implementation plan.
