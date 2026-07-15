@@ -46,7 +46,7 @@ interface CalibrateObject {
 
 // SignalName → field on `SignalValues`. Only `wall_clock_per_line` differs
 // (its field is `wall_clock_per_line_ms`).
-const SIGNAL_FIELDS: Record<SignalName, keyof SignalValues> = {
+export const SIGNAL_FIELDS: Record<SignalName, keyof SignalValues> = {
   explore_ratio: 'explore_ratio',
   reread: 'reread',
   failure_streak: 'failure_streak',
@@ -72,7 +72,7 @@ const THRESHOLD_KEYS: Record<
 };
 
 // Canonical signal order for deterministic output.
-const SIGNAL_ORDER: readonly SignalName[] = [
+export const SIGNAL_ORDER: readonly SignalName[] = [
   'explore_ratio',
   'reread',
   'failure_streak',

@@ -7,11 +7,12 @@
 
 import type {
   ReflectFinding,
-  SignalName,
   SignalValues,
   StopHookOutput,
   StruggleRecord,
 } from '../types.js';
+
+import { SIGNAL_FIELDS, SIGNAL_ORDER } from './calibrate.js';
 
 /** Inputs to `buildReflectFinding`. */
 interface ReflectFindingInput {
@@ -23,29 +24,6 @@ interface ReflectFindingInput {
 // derived clauses can be appended with clean punctuation.
 const REFLECT_PROMPT =
   'Struggle detected this session — reflect on the friction and propose one harness change (fill the ReflectFrame; verify the target path exists)';
-
-// Canonical signal order for deterministic output, mirroring calibrate.ts.
-const SIGNAL_ORDER: readonly SignalName[] = [
-  'explore_ratio',
-  'reread',
-  'failure_streak',
-  'corrections',
-  'abandonment',
-  'oscillation',
-  'wall_clock_per_line',
-];
-
-// SignalName -> field on `SignalValues`. Only `wall_clock_per_line` differs
-// (its field is `wall_clock_per_line_ms`).
-const SIGNAL_FIELDS: Record<SignalName, keyof SignalValues> = {
-  explore_ratio: 'explore_ratio',
-  reread: 'reread',
-  failure_streak: 'failure_streak',
-  corrections: 'corrections',
-  abandonment: 'abandonment',
-  oscillation: 'oscillation',
-  wall_clock_per_line: 'wall_clock_per_line_ms',
-};
 
 /**
  * Build the `ReflectFinding` from a record. Pure: derives `trip` as
