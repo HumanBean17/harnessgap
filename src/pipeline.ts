@@ -374,8 +374,8 @@ async function pickLatestEnvelope(
  * Shared detect+build step for both resolution modes. Given the streamed
  * envelope (or null when --latest found nothing): resolve its main repo if not
  * already stamped, run the n=1 detector (forceBootstrap), and build the
- * ReflectFinding. Fail-open: a null envelope or an unresolvable cwd yields a
- * degenerate trip:false finding.
+ * ReflectFinding. Fail-open: a null envelope, an unresolvable cwd, OR a thrown
+ * error from the guarded detect step all yield a degenerate trip:false finding.
  */
 function buildFindingFromEnvelope(
   envelope: NormalizedEnvelope | null,
@@ -413,11 +413,20 @@ function buildFindingFromEnvelope(
     return buildReflectFinding({ record: degenerateRecord(envelope), zero_edit });
   }
 
-  envelope.repo = repo;
-  relativizeEnvelopeFiles(envelope, repo);
-  const records = runDetector([envelope], cfg, true);
-  const record = records[0] ?? degenerateRecord(envelope);
-  return buildReflectFinding({ record, zero_edit });
+  // Detect step is guarded: a throw from relativize/detect (latent today — both
+  // are pure over current inputs) must fail open to a trip:false finding so the
+  // Claude Code Stop hook still receives `{}` instead of a thrown rejection.
+  // Degrade identically to the unresolvable-repo branch above (flagged:false
+  // → trip:false). Shared by --transcript and --latest, so both modes are covered.
+  try {
+    envelope.repo = repo;
+    relativizeEnvelopeFiles(envelope, repo);
+    const records = runDetector([envelope], cfg, true);
+    const record = records[0] ?? degenerateRecord(envelope);
+    return buildReflectFinding({ record, zero_edit });
+  } catch {
+    return buildReflectFinding({ record: degenerateRecord(envelope), zero_edit });
+  }
 }
 
 /** Minimal empty envelope for the no-session fail-open path (no records). */

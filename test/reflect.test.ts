@@ -10,7 +10,7 @@
 //   failure_streak >= 3, wall_clock_per_line_ms >= 300000, reread >= 5.
 // `flagged` in bootstrap mode = composite >= 70 OR >= 2 signals trip.
 
-import { describe, it, expect, afterEach } from 'vitest';
+import { describe, it, expect, afterEach, vi } from 'vitest';
 import { writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { runReflect } from '../src/pipeline.js';
@@ -23,6 +23,27 @@ import {
 } from './helpers/builder.js';
 import type { EventSpec } from './helpers/builder.js';
 import type { ReflectFinding, StopHookOutput } from '../src/types.js';
+
+// --- module-level mock toggle for the detector-error fail-open test (below) ---
+// vi.mock is hoisted above every import, so this factory runs before
+// pipeline.ts loads and all consumers (runReflect included) get the wrapper.
+// It delegates to the real detector unless the toggle is on, in which case
+// runDetector throws — exercising the guarded detect step. Default off, so the
+// other (real-pipeline) tests are unaffected.
+const detectorThrows = vi.hoisted(() => ({ now: false }));
+vi.mock('../src/detector/index.js', async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import('../src/detector/index.js')>();
+  return {
+    ...actual,
+    runDetector: (...args: Parameters<typeof actual.runDetector>) => {
+      if (detectorThrows.now) {
+        throw new Error('forced detector failure (fail-open test)');
+      }
+      return actual.runDetector(...args);
+    },
+  };
+});
 
 afterEach(cleanupTempDirs);
 
@@ -300,5 +321,45 @@ describe('runReflect — --latest --repo most-recent-session resolution', () => 
     });
     expect(result.exitCode).toBe(0);
     expect(JSON.parse(result.output)).toEqual({});
+  });
+});
+
+describe('runReflect — detector errors fail open to trip:false', () => {
+  // runDetector is pure and no real input throws, so the guard is exercised by
+  // forcing the detector to throw via the module-level mock toggle. The
+  // TRIP_EVENTS fixture would normally trip (flagged:true → trip:true); with the
+  // detector throwing, the guarded detect step must degrade to a degenerate
+  // trip:false finding and never reject — the Stop-hook safety contract.
+  afterEach(() => {
+    detectorThrows.now = false;
+  });
+
+  it('detector throws (hook-stop): exitCode 0, output parses to {}', async () => {
+    detectorThrows.now = true;
+    const { repo } = setupTempRepo();
+    const file = writeTempTranscript(
+      mkSession(repo, { name: 'trip', stepMs: 200_000, events: TRIP_EVENTS }),
+    );
+
+    const result = await runReflect({
+      transcript: file,
+      format: 'hook-stop',
+      stopHookActive: false,
+    });
+    expect(result.exitCode).toBe(0);
+    expect(JSON.parse(result.output)).toEqual({});
+  });
+
+  it('detector throws (json): parsed trip === false', async () => {
+    detectorThrows.now = true;
+    const { repo } = setupTempRepo();
+    const file = writeTempTranscript(
+      mkSession(repo, { name: 'trip', stepMs: 200_000, events: TRIP_EVENTS }),
+    );
+
+    const result = await runReflect({ transcript: file, format: 'json' });
+    expect(result.exitCode).toBe(0);
+    const parsed = JSON.parse(result.output) as ReflectFinding;
+    expect(parsed.trip).toBe(false);
   });
 });
