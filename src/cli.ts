@@ -12,7 +12,7 @@
 import { Command } from 'commander';
 import { readFileSync } from 'node:fs';
 import process from 'node:process';
-import { runScan, type ScanOptions } from './pipeline.js';
+import { runScan, type ScanOptions, runReflect, type ReflectOptions } from './pipeline.js';
 import { ConfigError } from './config.js';
 
 // Resolve package.json relative to this module so the version is correct
@@ -29,6 +29,18 @@ interface ScanOpts {
   json?: boolean;
   calibrate?: boolean;
   bootstrap?: boolean;
+  config?: string;
+  claudeDir?: string;
+}
+
+/** The parsed option shape commander hands to the reflect action. */
+interface ReflectOpts {
+  transcript?: string;
+  latest?: boolean;
+  repo?: string;
+  excludeSession?: string;
+  stopHookActive?: boolean;
+  format?: 'json' | 'hook-stop';
   config?: string;
   claudeDir?: string;
 }
@@ -76,6 +88,47 @@ program
     } catch (e) {
       // ConfigError carries a clean human message; any other thrown error is
       // surfaced by message only — never the stack.
+      const msg = e instanceof Error ? e.message : String(e);
+      process.stderr.write(`error: ${msg}\n`, () => process.exit(1));
+    }
+  });
+
+program
+  .command('reflect')
+  .description('Reflect on a single session (session-end n=1 detection)')
+  .option('--transcript <path>', 'reflect on one given transcript file')
+  .option('--latest', 'reflect on the most-recent session for --repo')
+  .option('--repo <path>', 'target repo toplevel (used with --latest)')
+  .option('--exclude-session <id>', 'exclude a session id (used with --latest)')
+  .option('--stop-hook-active', 'the Claude Code Stop hook is already active')
+  .option(
+    '--format <json|hook-stop>',
+    'output form: the json finding or the Stop hook payload',
+    'json',
+  )
+  .option('--config <path>', 'path to a .harnessgap.yml config file')
+  .option('--claude-dir <path>', 'Claude Code config directory (contains projects/)')
+  .action(async (opts: ReflectOpts) => {
+    const reflectOpts: ReflectOptions = {
+      transcript: opts.transcript,
+      latest: opts.latest,
+      repo: opts.repo,
+      excludeSession: opts.excludeSession,
+      stopHookActive: opts.stopHookActive,
+      format: opts.format,
+      configPath: opts.config,
+      claudeDir: opts.claudeDir,
+    };
+    try {
+      const result = await runReflect(reflectOpts);
+      // Write then exit in the flush callback so piped stdout is never
+      // truncated by process.exit.
+      process.stdout.write(result.output + '\n', () =>
+        process.exit(result.exitCode),
+      );
+    } catch (e) {
+      // Only arg/config errors throw (runReflect fails open otherwise); surface
+      // by message only — never the stack.
       const msg = e instanceof Error ? e.message : String(e);
       process.stderr.write(`error: ${msg}\n`, () => process.exit(1));
     }
