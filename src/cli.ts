@@ -13,6 +13,7 @@ import { Command } from 'commander';
 import { readFileSync } from 'node:fs';
 import process from 'node:process';
 import { runScan, type ScanOptions, runReflect, type ReflectOptions } from './pipeline.js';
+import { initClaude } from './init/claude.js';
 import { ConfigError } from './config.js';
 
 // Resolve package.json relative to this module so the version is correct
@@ -129,6 +130,33 @@ program
     } catch (e) {
       // Only arg/config errors throw (runReflect fails open otherwise); surface
       // by message only — never the stack.
+      const msg = e instanceof Error ? e.message : String(e);
+      process.stderr.write(`error: ${msg}\n`, () => process.exit(1));
+    }
+  });
+
+program
+  .command('init <agent>')
+  .description('Install the harnessgap Stop hook + /reflect command for an agent')
+  .action((agent: string) => {
+    // Only `claude` is supported this slice.
+    if (agent !== 'claude') {
+      process.stderr.write(
+        `error: unsupported agent '${agent}'. Only 'claude' is supported.\n`,
+        () => process.exit(1),
+      );
+      return;
+    }
+    try {
+      const { wrapperPath, settingsPath, commandPath } = initClaude({
+        cwd: process.cwd(),
+      });
+      // One-line summary of the paths written (wrapper path signals success).
+      process.stdout.write(
+        `installed harnessgap for claude: ${wrapperPath} | ${settingsPath} | ${commandPath}\n`,
+        () => process.exit(0),
+      );
+    } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       process.stderr.write(`error: ${msg}\n`, () => process.exit(1));
     }
