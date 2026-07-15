@@ -14,7 +14,7 @@ import { execFileSync, execFile } from 'node:child_process';
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { initClaude } from '../src/init/claude.js';
+import { initClaude, buildWrapperSource } from '../src/init/claude.js';
 import {
   mkSession,
   setupTempRepo,
@@ -177,6 +177,31 @@ describe('emitted wrapper — fail-open behavior', () => {
         stop_hook_active: false,
         transcript_path: join(cwd, 'does-not-exist.jsonl'),
       }),
+    );
+    expect(JSON.parse(out)).toEqual({});
+  });
+
+  it('missing/unresolvable CLI binary → {} and exits 0 (spawn-result fail-open)', () => {
+    // Distinct from the "nonexistent transcript" case above: that exercises the
+    // *binary's own* fail-open to {} (the binary runs fine, streamSession fails
+    // open). This one bakes a wrapper whose embedded CLI path does not exist, so
+    // the spawned `node <bogusCli>` exits non-zero (cannot find the module) and
+    // the WRAPPER's spawn-result guard — not the binary — must synthesize {} +
+    // exit 0. Discriminating: drop the `else { emit('{}\\n'); }` fail-open (i.e.
+    // forward `result.stdout` unconditionally) and the wrapper emits empty stdout
+    // instead of {}.
+    const tmp = makeTempDir('init-missing-bin');
+    const bogusCli = join(tmp, 'no-such-binary.js'); // path does not exist
+    const wrapperFile = join(tmp, 'wrapper.js');
+    writeFileSync(
+      wrapperFile,
+      buildWrapperSource({ cliPath: bogusCli }),
+      'utf8',
+    );
+
+    const out = runWrapper(
+      wrapperFile,
+      JSON.stringify({ stop_hook_active: false, transcript_path: '/any.jsonl' }),
     );
     expect(JSON.parse(out)).toEqual({});
   });

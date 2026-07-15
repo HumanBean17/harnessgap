@@ -150,4 +150,33 @@ describe('reflect finding + stop-hook renderer', () => {
       expect(t === 'string' || t === 'number' || t === 'boolean').toBe(true);
     }
   });
+
+  it('8. buildReason — surfaces the 3 highest-WEIGHT area keys, not the alphabetically-first 3', () => {
+    // record.areas arrives KEY-sorted (localeCompare) from localizeAreas; the
+    // weight-desc sort lives only in the aggregator path reflect never sees.
+    // Keys a/b/c/d in alphabetical order with NON-monotonic weights so the
+    // heaviest (c, d) plus b are the top 3, leaving a (alphabetically first,
+    // lowest weight) out.
+    const record = mkRecord({
+      flagged: true,
+      mode: 'bootstrap',
+      areas: [
+        { key: 'a', weight: 1 }, // alphabetically first, but lowest weight → out
+        { key: 'b', weight: 2 },
+        { key: 'c', weight: 10 }, // heaviest
+        { key: 'd', weight: 9 },
+      ],
+      signals: zeroSignals(), // isolate areas: no signal clause
+    });
+    const finding = buildReflectFinding({ record, zero_edit: false });
+    const out = formatStopHookOutput(finding, false);
+
+    expect(out.decision).toBe('block');
+    // top 3 by weight: c(10), d(9), b(2) — all present (re-sorted by key)
+    expect(out.reason).toContain('"b"');
+    expect(out.reason).toContain('"c"');
+    expect(out.reason).toContain('"d"');
+    // the alphabetically-first area (a, lowest weight) is NOT surfaced
+    expect(out.reason).not.toContain('"a"');
+  });
 });

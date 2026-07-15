@@ -62,14 +62,26 @@ export function formatStopHookOutput(
 }
 
 /**
- * Compose the block `reason`. Static prompt + up to 3 top area keys (quoted) +
- * active signal name(value) pairs. No transcript prose — only the prompt
- * literal, repo-relative area keys, signal names, and numeric/boolean values.
+ * Compose the block `reason`. Static prompt + up to 3 highest-weight area keys
+ * (quoted), then re-sorted by key for deterministic display, + active signal
+ * name(value) pairs. No transcript prose — only the prompt literal, repo-relative
+ * area keys, signal names, and numeric/boolean values.
+ *
+ * NOTE: `record.areas` arrives in key-sorted (lexicographic) order from
+ * `localizeAreas` — NOT weight-desc — so "top" must be derived here by sorting
+ * on `weight` before taking 3. The weight-desc sort in the aggregator path is
+ * not visible to `reflect`.
  */
 function buildReason(finding: ReflectFinding): string {
   const clauses: string[] = [];
 
-  const topAreas = finding.record.areas.slice(0, 3).map((a) => `"${a.key}"`);
+  // Top 3 by weight, then re-sorted by key so the rendered clause is stable.
+  const topAreas = finding.record.areas
+    .slice()
+    .sort((a, b) => b.weight - a.weight)
+    .slice(0, 3)
+    .sort((a, b) => a.key.localeCompare(b.key))
+    .map((a) => `"${a.key}"`);
   if (topAreas.length > 0) {
     clauses.push(`Friction: ${topAreas.join(', ')}`);
   }
