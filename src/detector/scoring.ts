@@ -7,6 +7,13 @@ interface SessionScore {
   mode: ScoringMode;
   flagged: boolean;
   composite: number;
+  /** Bootstrap composite (0–100) for the session — always populated, even in
+   * percentile mode. Identical to `composite` when `mode === 'bootstrap'`. */
+  bootstrap_composite: number;
+  /** Bootstrap flag for the session — always populated. True when
+   * `bootstrap_composite >= cfg.detector.bootstrap_flag_pct` or ≥2 signals
+   * trip. Identical to `flagged` when `mode === 'bootstrap'`. */
+  bootstrap_flagged: boolean;
 }
 
 interface SignalSpec {
@@ -121,16 +128,31 @@ function percentileModeScore(signals: SignalValues[], cfg: Config): SessionScore
 
   return composites.map((composite, i) => {
     const scorePct = percentileRank(composites, i);
+    const trip = bootstrapTrip(signals[i], cfg);
     return {
       score_pct: scorePct,
       mode: 'percentile',
       flagged: scorePct >= cfg.detector.flag_pct,
       composite,
+      bootstrap_composite: trip.composite,
+      bootstrap_flagged: trip.flagged,
     };
   });
 }
 
-function bootstrapScore(s: SignalValues, cfg: Config): SessionScore {
+/**
+ * Compute the bootstrap trip (composite + flag) for a single session. Pure,
+ * no I/O. Called for every session in both modes so `bootstrap_composite`
+ * and `bootstrap_flagged` are always populated.
+ *
+ * Composite is on a 0–100 scale: each tripped signal contributes 100 × weight,
+ * renormalized by the sum of weights of non-null signals. Flag is true when
+ * `composite >= cfg.detector.bootstrap_flag_pct` OR at least two signals trip.
+ */
+function bootstrapTrip(
+  s: SignalValues,
+  cfg: Config,
+): { composite: number; flagged: boolean } {
   const weights = cfg.detector.signal_weights;
   const thresholds = cfg.detector.bootstrap_thresholds;
   let weightSum = 0;
@@ -148,7 +170,6 @@ function bootstrapScore(s: SignalValues, cfg: Config): SessionScore {
       : (v as number) >= (threshold as number);
     if (tripped) {
       trippedCount += 1;
-      // composite is on a 0–100 scale: tripped contributes 100 × weight.
       weighted += 100 * w;
     }
   }
@@ -157,10 +178,17 @@ function bootstrapScore(s: SignalValues, cfg: Config): SessionScore {
   const flagged =
     composite >= cfg.detector.bootstrap_flag_pct || trippedCount >= 2;
 
+  return { composite, flagged };
+}
+
+function bootstrapScore(s: SignalValues, cfg: Config): SessionScore {
+  const { composite, flagged } = bootstrapTrip(s, cfg);
   return {
     score_pct: composite,
     mode: 'bootstrap',
     flagged,
     composite,
+    bootstrap_composite: composite,
+    bootstrap_flagged: flagged,
   };
 }

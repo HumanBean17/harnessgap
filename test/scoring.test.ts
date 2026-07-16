@@ -170,4 +170,57 @@ describe('scoreSessions', () => {
     expect(results[29].score_pct).toBe(100);
     expect(results[29].flagged).toBe(true);
   });
+
+  it('11. percentile mode: bootstrap trip is computed (reread+failure_streak trip) — bootstrap_flagged true', () => {
+    // 30 sessions (≥ bootstrap_session_floor=30) → percentile mode. The target
+    // session trips reread=5 (≥5) and failure_streak=3 (≥3): two tripped signals
+    // ⇒ bootstrap_flagged true regardless of composite. bootstrap_composite is
+    // a finite positive number. Percentile `flagged` is intentionally not asserted.
+    const sessions: SignalValues[] = Array.from({ length: 30 }, () => zeroSignals());
+    sessions[0] = zeroSignals({ reread: 5, failure_streak: 3 });
+    const results = scoreSessions({ signals: sessions, cfg: DEFAULT_CONFIG, forceBootstrap: false });
+
+    expect(results[0].mode).toBe('percentile');
+    expect(results[0].bootstrap_flagged).toBe(true);
+    expect(Number.isFinite(results[0].bootstrap_composite)).toBe(true);
+    expect(results[0].bootstrap_composite).toBeGreaterThan(0);
+  });
+
+  it('12. percentile mode: all-zero session → bootstrap_composite 0, bootstrap_flagged false', () => {
+    const sessions: SignalValues[] = Array.from({ length: 30 }, () => zeroSignals());
+    const results = scoreSessions({ signals: sessions, cfg: DEFAULT_CONFIG, forceBootstrap: false });
+
+    expect(results[0].mode).toBe('percentile');
+    expect(results[0].bootstrap_composite).toBe(0);
+    expect(results[0].bootstrap_flagged).toBe(false);
+  });
+
+  it('13. bootstrap mode: bootstrap_composite === composite and bootstrap_flagged === flagged for every result', () => {
+    // In bootstrap mode the bootstrap trip IS the active score, so the new
+    // fields must equal the existing fields byte-for-byte. Use a mix of
+    // sessions to exercise both flagged and unflagged paths.
+    const sessions: SignalValues[] = [
+      zeroSignals(),                                        // nothing trips
+      zeroSignals({ reread: 5, failure_streak: 3 }),        // two trips → flagged
+      zeroSignals({ oscillation: 2 }),                      // one trip, composite < 70 → not flagged
+      zeroSignals({
+        reread: 5,
+        failure_streak: 3,
+        corrections: 2,
+        abandonment: true,
+        oscillation: 2,
+      }),                                                   // many trips → flagged
+    ];
+    const results = scoreSessions({ signals: sessions, cfg: DEFAULT_CONFIG, forceBootstrap: true });
+
+    expect(results.length).toBe(4);
+    for (const r of results) {
+      expect(r.mode).toBe('bootstrap');
+      expect(r.bootstrap_composite).toBe(r.composite);
+      expect(r.bootstrap_flagged).toBe(r.flagged);
+    }
+    // Sanity: at least one flagged and one unflagged in the set.
+    expect(results.some((r) => r.flagged)).toBe(true);
+    expect(results.some((r) => !r.flagged)).toBe(true);
+  });
 });
