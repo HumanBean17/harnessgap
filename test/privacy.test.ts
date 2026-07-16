@@ -9,6 +9,9 @@
 //   (b) Malformed: prose markers absent from all 3 output modes + warnings.
 //   (c) Safety: symlinks rejected, unresolvable cwd skipped, oversized lines
 //       skipped. Warnings are integers with no path/prose.
+//   (d) Baseline/finding/calibrate surfaces prose-free at ≥min_sessions: forces
+//       the ambient finding to fire (single-session fixtures cannot), then
+//       asserts no prose marker reaches repo_findings, baseline, or calibrate.
 
 import { describe, it, expect, afterEach } from 'vitest';
 import { runScan } from '../src/pipeline.js';
@@ -20,6 +23,7 @@ import {
   mkSession,
   makeTempDir,
   cleanupTempDirs,
+  type EventSpec,
 } from './helpers/builder.js';
 import {
   secretShapeSlug,
@@ -229,5 +233,92 @@ describe('privacy (c): warnings are integers with no path/prose; safety fixtures
     expect(result.warnings.oversized_lines).toBeGreaterThanOrEqual(1);
     // The valid line should still be parsed (session scanned).
     expect(result.sessionCount).toBe(1);
+  });
+});
+
+// --- (d) Baseline/finding/calibrate surfaces prose-free at ≥min_sessions ---
+//
+// Sections (a)/(b) write a SINGLE session, which can never trip the ambient
+// finding (min_sessions=10). The new RepoFinding, the baseline block in human
+// output, and the calibrate BASELINE line are therefore unexercised by those
+// fixtures. This section builds ≥min_sessions where each pre-edit read spans
+// ≥breadth_floor distinct depth-2 dirs so the orientation path fires and the
+// finding becomes non-null — then asserts no prose marker reaches any output.
+
+describe('privacy (d): baseline/finding surfaces carry no prose', () => {
+  it('repo_findings, baseline block, and calibrate line stay prose-free', async () => {
+    // Scoped name: PROSE_MARKER is already imported at module scope (sections
+    // a/b/c) — defining it again here would shadow that import.
+    const BASELINE_PROSE_MARKER = 'Q9bKxe_secret_prose_marker';
+    const { repo, claudeDir } = setupTempRepo();
+
+    // Fixture: 12 sessions (≥ min_sessions=10). Each session pre-edit reads
+    // files across 5 distinct depth-2 dirs (src/a1..a5) → dirBreadth=5 ≥
+    // breadth_floor=4, so the median dir-breadth across sessions trips the
+    // orientation path → state 'elevated' → finding non-null. Half the sessions
+    // also plant the marker inside a user_text and an exec cmd (the events a
+    // prose leak would originate from). Each session ends with one edit so it
+    // counts as a with-edit session (orientation metric defined).
+    const dirs = ['a1', 'a2', 'a3', 'a4', 'a5'];
+    const readFiles = dirs.map((d) => `src/${d}/f.ts`);
+    const N_SESSIONS = 12;
+    const slug = 'baseline-prose-slug';
+
+    for (let i = 0; i < N_SESSIONS; i++) {
+      const events: EventSpec[] = [];
+      // 5 reads across 5 distinct depth-2 dirs (orientation breadth = 5).
+      for (const f of readFiles) {
+        events.push({ kind: 'read', file: f });
+      }
+      // Every other session carries the marker in user_text + exec cmd.
+      if (i % 2 === 0) {
+        events.push({ kind: 'user_text', text: BASELINE_PROSE_MARKER });
+        events.push({ kind: 'exec', cmd: 'echo ' + BASELINE_PROSE_MARKER });
+      }
+      // First edit after the reads → orientation metric computed over reads.
+      events.push({ kind: 'edit', file: 'src/target/app.ts', newString: 'y' });
+
+      const name = `session-${i}`;
+      writeTranscript(claudeDir, slug, name, mkSession(repo, { name, events }));
+    }
+
+    // --- JSON output: finding fired + no marker anywhere ---
+    const jsonResult = await runScan({ repo, claudeDir, json: true });
+    const parsed = JSON.parse(jsonResult.output) as JsonOutput;
+    // Load-bearing: confirms the new RepoFinding surface is genuinely exercised
+    // (not vacuously prose-free because the finding never fired).
+    expect(
+      parsed.repo_findings.length,
+      'ambient finding should fire at n≥min_sessions with elevated orientation',
+    ).toBe(1);
+    expect(
+      JSON.stringify(parsed.repo_findings).includes(BASELINE_PROSE_MARKER),
+      'prose marker leaked into repo_findings',
+    ).toBe(false);
+    expect(
+      JSON.stringify(parsed).includes(BASELINE_PROSE_MARKER),
+      'prose marker leaked into --json output',
+    ).toBe(false);
+
+    // --- Human output: no marker (covers the BASELINE block) ---
+    const humanResult = await runScan({ repo, claudeDir });
+    expect(
+      humanResult.output.includes(BASELINE_PROSE_MARKER),
+      'prose marker leaked into human output',
+    ).toBe(false);
+
+    // --- Calibrate output: no marker (covers the BASELINE summary line) ---
+    const calibrateResult = await runScan({ repo, claudeDir, calibrate: true });
+    expect(
+      calibrateResult.output.includes(BASELINE_PROSE_MARKER),
+      'prose marker leaked into calibrate output',
+    ).toBe(false);
+
+    // --- Positive enum check: severity + paths are fixed literals ---
+    const finding = parsed.repo_findings[0]!;
+    expect(['high', 'medium', 'low', 'unrated']).toContain(finding.severity);
+    for (const p of finding.paths) {
+      expect(['orientation', 'acute']).toContain(p);
+    }
   });
 });
