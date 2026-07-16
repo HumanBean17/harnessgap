@@ -8,6 +8,7 @@ import {
 import { DEFAULT_CONFIG } from '../src/config.js';
 import type {
   AreaRow,
+  BaselineAssessment,
   RepoFinding,
   SignalName,
   SignalValues,
@@ -43,6 +44,46 @@ function mkRecord(overrides: Partial<StruggleRecord> = {}): StruggleRecord {
     event_count: 0,
     areas: [],
     signals: zeroSignals(),
+    ...overrides,
+  };
+}
+
+/** A populated orientation block; overrides applied on top. */
+function mkOrientation(overrides: Partial<NonNullable<BaselineAssessment['orientation']>> = {}) {
+  return {
+    median_dir_breadth: 2,
+    median_file_depth: 5,
+    breadth_floor: 4,
+    file_depth_floor: 12,
+    with_edit_sessions: 18,
+    ...overrides,
+  };
+}
+
+/** Build a BaselineAssessment with defaults; overrides applied on top. */
+function mkBaseline(overrides: Partial<BaselineAssessment> = {}): BaselineAssessment {
+  return {
+    state: 'within-norms',
+    sessions_sampled: 20,
+    scoring_mode: 'percentile',
+    orientation: mkOrientation(),
+    zero_edit_fraction: 0.1,
+    acute: { struggle_rate: 0.1, struggle_rate_threshold: 0.3 },
+    ...overrides,
+  };
+}
+
+/** Build a RepoFinding with defaults; overrides applied on top. */
+function mkFinding(overrides: Partial<RepoFinding> = {}): RepoFinding {
+  return {
+    kind: 'elevated-baseline',
+    severity: 'high',
+    paths: ['orientation'],
+    sessions_sampled: 20,
+    scoring_mode: 'percentile',
+    orientation: mkOrientation(),
+    zero_edit_fraction: 0.1,
+    acute: { struggle_rate: 0.1, struggle_rate_threshold: 0.3 },
     ...overrides,
   };
 }
@@ -161,6 +202,8 @@ describe('output formatters', () => {
       areas,
       summary: { flagged: 3, unflagged: 2, unlocalized: 1 },
       warnings,
+      baseline: mkBaseline(),
+      finding: null,
     });
 
     // header line
@@ -203,6 +246,8 @@ describe('output formatters', () => {
         symlinks_rejected: 0,
         unresolvable_cwd: 0,
       },
+      baseline: mkBaseline({ state: 'too-few-sessions', sessions_sampled: 0 }),
+      finding: null,
     });
 
     const lines = out.split('\n');
@@ -361,6 +406,8 @@ describe('output formatters', () => {
       ],
       summary: { flagged: 1, unflagged: 0, unlocalized: 0 },
       warnings,
+      baseline: mkBaseline(),
+      finding: null,
     });
 
     // non-zero categories appear
@@ -458,5 +505,261 @@ describe('output formatters', () => {
     expect(out.repo).toBe('r');
     expect(out.mode).toBe('percentile');
     expect(out.session_count).toBe(1);
+  });
+
+  // --- Task 7: baseline line + elevated-baseline block ---
+
+  it('9. formatHuman — elevated + orientation path emits BASELINE line and all three detail lines', () => {
+    const out = formatHuman({
+      repo: 'r',
+      mode: 'percentile',
+      sessionCount: 30,
+      areas: [],
+      summary: { flagged: 0, unflagged: 0, unlocalized: 0 },
+      warnings: {
+        malformed_lines: 0,
+        oversized_lines: 0,
+        skipped_sessions: 0,
+        truncated_sessions: 0,
+        symlinks_rejected: 0,
+        unresolvable_cwd: 0,
+      },
+      baseline: mkBaseline({ state: 'elevated', sessions_sampled: 30 }),
+      finding: mkFinding({
+        severity: 'high',
+        paths: ['orientation'],
+        orientation: mkOrientation({
+          median_dir_breadth: 7,
+          median_file_depth: 20,
+          breadth_floor: 4,
+          file_depth_floor: 12,
+          with_edit_sessions: 27,
+        }),
+        zero_edit_fraction: 0.1,
+        acute: { struggle_rate: 0.2, struggle_rate_threshold: 0.3 },
+      }),
+    });
+
+    // The BASELINE elevated line with closed-enum severity.
+    expect(out).toContain('BASELINE — elevated (orientation) · severity: high');
+    // The orientation detail line (present because finding.orientation !== null).
+    expect(out).toContain(
+      '  orientation 7 dirs / 20 files (floors 4 / 12) · over 27 with-edit sessions',
+    );
+    // The zero-edit / acute detail line.
+    expect(out).toContain(
+      '  zero-edit (Q&A) sessions: 10% · acute struggle rate: 20% (threshold 30%)',
+    );
+    // The fixed interpretation literal (em-dash included).
+    expect(out).toContain(
+      '  the typical session orients broadly before acting — worth investigating (cause undiagnosed)',
+    );
+  });
+
+  it('10. formatHuman — elevated + acute-only path (orientation null) omits orientation detail line', () => {
+    const out = formatHuman({
+      repo: 'r',
+      mode: 'percentile',
+      sessionCount: 30,
+      areas: [],
+      summary: { flagged: 0, unflagged: 0, unlocalized: 0 },
+      warnings: {
+        malformed_lines: 0,
+        oversized_lines: 0,
+        skipped_sessions: 0,
+        truncated_sessions: 0,
+        symlinks_rejected: 0,
+        unresolvable_cwd: 0,
+      },
+      baseline: mkBaseline({
+        state: 'elevated',
+        sessions_sampled: 30,
+        orientation: null,
+      }),
+      finding: mkFinding({
+        severity: 'medium',
+        paths: ['acute'],
+        orientation: null,
+        zero_edit_fraction: 0.5,
+        acute: { struggle_rate: 0.6, struggle_rate_threshold: 0.3 },
+      }),
+    });
+
+    // Acute-only BASELINE line names the acute path.
+    expect(out).toContain('BASELINE — elevated (acute) · severity: medium');
+    // The orientation detail line is ABSENT (finding.orientation === null).
+    expect(out).not.toContain('dirs /');
+    // The zero-edit / acute detail line still prints.
+    expect(out).toContain(
+      '  zero-edit (Q&A) sessions: 50% · acute struggle rate: 60% (threshold 30%)',
+    );
+    // Fixed interpretation literal still prints.
+    expect(out).toContain('(cause undiagnosed)');
+  });
+
+  it('11. formatHuman — within-norms emits the within-norms BASELINE line with orientation numbers', () => {
+    const out = formatHuman({
+      repo: 'r',
+      mode: 'percentile',
+      sessionCount: 20,
+      areas: [],
+      summary: { flagged: 0, unflagged: 0, unlocalized: 0 },
+      warnings: {
+        malformed_lines: 0,
+        oversized_lines: 0,
+        skipped_sessions: 0,
+        truncated_sessions: 0,
+        symlinks_rejected: 0,
+        unresolvable_cwd: 0,
+      },
+      baseline: mkBaseline({
+        state: 'within-norms',
+        orientation: mkOrientation({ median_dir_breadth: 3, median_file_depth: 8 }),
+        zero_edit_fraction: 0.25,
+        acute: { struggle_rate: 0.1, struggle_rate_threshold: 0.3 },
+      }),
+      finding: null,
+    });
+
+    expect(out).toContain(
+      'BASELINE — within norms · orientation 3 dirs / 8 files · zero-edit 25% · acute 10%',
+    );
+    // No detail block in within-norms state.
+    expect(out).not.toContain('(cause undiagnosed)');
+  });
+
+  it('12. formatHuman — too-few-sessions emits the too-few BASELINE line with sessions_sampled', () => {
+    const out = formatHuman({
+      repo: 'r',
+      mode: 'bootstrap',
+      sessionCount: 5,
+      areas: [],
+      summary: { flagged: 0, unflagged: 0, unlocalized: 0 },
+      warnings: {
+        malformed_lines: 0,
+        oversized_lines: 0,
+        skipped_sessions: 0,
+        truncated_sessions: 0,
+        symlinks_rejected: 0,
+        unresolvable_cwd: 0,
+      },
+      baseline: mkBaseline({ state: 'too-few-sessions', sessions_sampled: 5 }),
+      finding: null,
+    });
+
+    expect(out).toContain('BASELINE — too few sessions (5) to assess');
+  });
+
+  it('13. formatHuman — orientation-undefined emits the within-norms / exploration-only line', () => {
+    const out = formatHuman({
+      repo: 'r',
+      mode: 'percentile',
+      sessionCount: 12,
+      areas: [],
+      summary: { flagged: 0, unflagged: 0, unlocalized: 0 },
+      warnings: {
+        malformed_lines: 0,
+        oversized_lines: 0,
+        skipped_sessions: 0,
+        truncated_sessions: 0,
+        symlinks_rejected: 0,
+        unresolvable_cwd: 0,
+      },
+      baseline: mkBaseline({
+        state: 'orientation-undefined',
+        orientation: null,
+        zero_edit_fraction: 1,
+        acute: { struggle_rate: 0.08, struggle_rate_threshold: 0.3 },
+      }),
+      finding: null,
+    });
+
+    expect(out).toContain(
+      'BASELINE — within norms · all sessions exploration-only; orientation metric undefined · acute 8%',
+    );
+  });
+
+  it('14. formatHuman — baseline line never leaks area keys / session content (fixed literals only)', () => {
+    // Place a distinctive sentinel as an area key. It legitimately appears in
+    // the area table, but it must NOT leak into the fixed baseline line/block.
+    const SENTINEL = 'src/SECRET_session_content_xyz';
+    const out = formatHuman({
+      repo: 'r',
+      mode: 'percentile',
+      sessionCount: 30,
+      areas: [
+        {
+          key: SENTINEL,
+          sessions_total: 1,
+          sessions_flagged: 1,
+          mean_score: 90,
+          top_signals: [{ name: 'reread', value: 3, display: 'reread(3)' }],
+        },
+      ],
+      summary: { flagged: 1, unflagged: 0, unlocalized: 0 },
+      warnings: {
+        malformed_lines: 0,
+        oversized_lines: 0,
+        skipped_sessions: 0,
+        truncated_sessions: 0,
+        symlinks_rejected: 0,
+        unresolvable_cwd: 0,
+      },
+      baseline: mkBaseline({ state: 'elevated', sessions_sampled: 30 }),
+      finding: mkFinding({ paths: ['orientation'] }),
+    });
+
+    // The sentinel DOES appear in the area table.
+    expect(out).toContain(SENTINEL);
+    // But every BASELINE / detail line must be free of the sentinel.
+    const lines = out.split('\n');
+    for (const line of lines) {
+      if (
+        line.startsWith('BASELINE —') ||
+        line.startsWith('  orientation ') ||
+        line.startsWith('  zero-edit ') ||
+        line.startsWith('  the typical session ')
+      ) {
+        expect(line).not.toContain(SENTINEL);
+      }
+    }
+    // Blank line separates baseline block from the area table.
+    const baselineEnd = lines.indexOf(
+      '  the typical session orients broadly before acting — worth investigating (cause undiagnosed)',
+    );
+    expect(baselineEnd).toBeGreaterThan(-1);
+    expect(lines[baselineEnd + 1]).toBe('');
+  });
+
+  it('15. formatHuman — within-norms with null orientation prints "orientation n/a"', () => {
+    // Edge: within-norms but orientation block is null (defensive — assessAmbient
+    // would normally emit orientation-undefined here, but the formatter must not
+    // crash or print "undefined" if handed this combination).
+    const out = formatHuman({
+      repo: 'r',
+      mode: 'percentile',
+      sessionCount: 20,
+      areas: [],
+      summary: { flagged: 0, unflagged: 0, unlocalized: 0 },
+      warnings: {
+        malformed_lines: 0,
+        oversized_lines: 0,
+        skipped_sessions: 0,
+        truncated_sessions: 0,
+        symlinks_rejected: 0,
+        unresolvable_cwd: 0,
+      },
+      baseline: mkBaseline({
+        state: 'within-norms',
+        orientation: null,
+        zero_edit_fraction: 0,
+        acute: { struggle_rate: 0, struggle_rate_threshold: 0.3 },
+      }),
+      finding: null,
+    });
+
+    expect(out).toContain(
+      'BASELINE — within norms · orientation n/a · zero-edit 0% · acute 0%',
+    );
   });
 });

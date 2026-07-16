@@ -218,6 +218,8 @@ export async function runScan(opts: ScanOptions): Promise<ScanResult> {
       areas: rows,
       summary,
       warnings,
+      baseline,
+      finding,
     });
   }
 
