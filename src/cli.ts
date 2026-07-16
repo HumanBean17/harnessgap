@@ -148,14 +148,23 @@ program
       return;
     }
     try {
-      const { wrapperPath, settingsPath, commandPath } = initClaude({
-        cwd: process.cwd(),
-      });
+      const { wrapperPath, settingsPath, commandPath, settingsBackupPath } =
+        initClaude({ cwd: process.cwd() });
       // One-line summary of the paths written (wrapper path signals success).
-      process.stdout.write(
-        `installed harnessgap for claude: ${wrapperPath} | ${settingsPath} | ${commandPath}\n`,
-        () => process.exit(0),
-      );
+      const summary = `installed harnessgap for claude: ${wrapperPath} | ${settingsPath} | ${commandPath}\n`;
+      const writeSuccess = () =>
+        process.stdout.write(summary, () => process.exit(0));
+      if (settingsBackupPath) {
+        // An existing settings.json was unparseable and got backed up before the
+        // fresh Stop entry was written — surface it so the user can recover.
+        // Written in a flush callback so the warning is never lost to exit.
+        process.stderr.write(
+          `warning: settings.json was invalid JSON — backed up to ${settingsBackupPath} before installing the hook\n`,
+          () => writeSuccess(),
+        );
+      } else {
+        writeSuccess();
+      }
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       process.stderr.write(`error: ${msg}\n`, () => process.exit(1));

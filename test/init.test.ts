@@ -234,9 +234,12 @@ describe('initClaude — settings.json merge + idempotency', () => {
     mkdirSync(join(cwd, '.claude'), { recursive: true });
     writeFileSync(join(cwd, '.claude', 'settings.json'), JSON.stringify(seed));
 
-    initClaude({ cwd });
+    const result = initClaude({ cwd });
     const settings = readSettings(cwd);
 
+    // A valid existing file needs no backup.
+    expect(result.settingsBackupPath).toBeUndefined();
+    expect(existsSync(join(cwd, '.claude', 'settings.json.bak'))).toBe(false);
     // Unrelated key preserved.
     expect(settings.permissions).toEqual({ allow: ['Bash(npm:*)'] });
     // Stop array has both the user entry and the harnessgap entry.
@@ -247,14 +250,36 @@ describe('initClaude — settings.json merge + idempotency', () => {
     expect(commands.some((c) => c.startsWith('node ') && c.endsWith('harnessgap-stop-hook.js'))).toBe(true);
   });
 
-  it('invalid existing settings.json is replaced with a valid merge (does not throw)', () => {
+  it('invalid existing settings.json is backed up verbatim, then replaced with a valid merge', () => {
     const cwd = makeTempDir('init');
+    const invalid = 'not valid json {';
     mkdirSync(join(cwd, '.claude'), { recursive: true });
-    writeFileSync(join(cwd, '.claude', 'settings.json'), 'not valid json {');
+    writeFileSync(join(cwd, '.claude', 'settings.json'), invalid);
 
-    expect(() => initClaude({ cwd })).not.toThrow();
+    const result = initClaude({ cwd });
+
+    // The original invalid content was backed up byte-for-byte to settings.json.bak.
+    const bakPath = join(cwd, '.claude', 'settings.json.bak');
+    expect(existsSync(bakPath)).toBe(true);
+    expect(readFileSync(bakPath, 'utf8')).toBe(invalid);
+    // initClaude surfaced the backup path to callers.
+    expect(result.settingsBackupPath).toBe(bakPath);
+    // The new settings.json is valid JSON with exactly one harnessgap Stop entry.
     const settings = readSettings(cwd);
     const stop = (settings.hooks as { Stop: unknown[] }).Stop;
+    expect(Array.isArray(stop)).toBe(true);
+    expect(stop).toHaveLength(1);
+  });
+
+  it('missing settings.json starts fresh with no backup (settingsBackupPath undefined)', () => {
+    const cwd = makeTempDir('init');
+    // No .claude/settings.json present at all → fresh {}, no .bak created.
+    const result = initClaude({ cwd });
+
+    expect(result.settingsBackupPath).toBeUndefined();
+    expect(existsSync(join(cwd, '.claude', 'settings.json.bak'))).toBe(false);
+    // Install still succeeds: a valid settings.json with the harnessgap Stop entry.
+    const stop = (readSettings(cwd).hooks as { Stop: unknown[] }).Stop;
     expect(Array.isArray(stop)).toBe(true);
     expect(stop).toHaveLength(1);
   });
@@ -318,5 +343,21 @@ describe('init CLI subcommand', () => {
     const { stderr, code } = await runCli(['init', 'cursor']);
     expect(code).not.toBe(0);
     expect(stderr.length).toBeGreaterThan(0);
+  });
+
+  it('init claude backs up an invalid settings.json and warns on stderr (exit 0)', async () => {
+    const cwd = makeTempDir('init-cli-invalid');
+    const invalid = 'not valid json {';
+    mkdirSync(join(cwd, '.claude'), { recursive: true });
+    writeFileSync(join(cwd, '.claude', 'settings.json'), invalid);
+
+    const { code, stderr } = await runCli(['init', 'claude'], { cwd });
+
+    // Install still succeeds; the broken file is displaced, not destroyed.
+    expect(code).toBe(0);
+    expect(stderr).toContain('warning');
+    expect(stderr).toContain('invalid JSON');
+    expect(stderr).toContain('settings.json.bak');
+    expect(readFileSync(join(cwd, '.claude', 'settings.json.bak'), 'utf8')).toBe(invalid);
   });
 });

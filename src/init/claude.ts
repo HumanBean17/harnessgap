@@ -10,7 +10,7 @@
 // artifact under .claude/, not part of src/'s egress surface).
 
 import { dirname, join } from 'node:path';
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { copyFileSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 
 /**
  * Absolute path to the published CLI binary (`dist/cli.js`), resolved from the
@@ -213,6 +213,13 @@ export interface InitClaudeResult {
   wrapperPath: string;
   settingsPath: string;
   commandPath: string;
+  /**
+   * Set when an *existing* settings.json failed to parse and was backed up to
+   * `settings.json.bak` (byte-for-byte) before the fresh Stop entry was written.
+   * `undefined` when no backup was needed (missing or valid file). Surfaced so
+   * callers can warn the user their original config was displaced, not deleted.
+   */
+  settingsBackupPath?: string;
 }
 
 /**
@@ -235,18 +242,36 @@ export function initClaude(opts: InitClaudeOpts): InitClaudeResult {
   writeFileSync(commandPath, COMMAND_SOURCE, 'utf8');
 
   // settings.json: read → parse-or-default → merge → write (pretty-printed).
+  // A *missing* file starts fresh. An *existing-but-unparseable* file is backed
+  // up byte-for-byte to settings.json.bak before being overwritten, so a broken
+  // hand-edit (trailing comma, truncated write, JSONC comment) never destroys
+  // the user's config. `init` is an explicit, synchronous command — preserving
+  // user data outranks silently rewriting it. (copyFileSync runs before the
+  // overwrite below, so it copies the original bytes, not the merged output.)
   let raw: Record<string, unknown> = {};
+  let settingsBackupPath: string | undefined;
+  let existingText = '';
+  let fileExists = false;
   try {
-    const text = readFileSync(settingsPath, 'utf8');
-    const parsed = JSON.parse(text);
-    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
-      raw = parsed as Record<string, unknown>;
-    }
+    existingText = readFileSync(settingsPath, 'utf8');
+    fileExists = true;
   } catch {
-    // missing or invalid → start fresh; never throw on user's broken file.
+    // missing → start fresh; never throw on user's missing file.
+  }
+  if (fileExists) {
+    try {
+      const parsed = JSON.parse(existingText);
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+        raw = parsed as Record<string, unknown>;
+      }
+    } catch {
+      // Existing file is unparseable — back it up verbatim before overwrite.
+      settingsBackupPath = `${settingsPath}.bak`;
+      copyFileSync(settingsPath, settingsBackupPath);
+    }
   }
   const merged = mergeStopHook(raw, wrapperPath);
   writeFileSync(settingsPath, `${JSON.stringify(merged, null, 2)}\n`, 'utf8');
 
-  return { wrapperPath, settingsPath, commandPath };
+  return { wrapperPath, settingsPath, commandPath, settingsBackupPath };
 }
