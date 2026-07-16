@@ -42,9 +42,11 @@ import { formatHuman } from './output/human.js';
 import { buildCalibrateObject, formatCalibrateTable } from './output/calibrate.js';
 import { buildReflectFinding, formatStopHookOutput } from './output/hook.js';
 import type {
+  BaselineAssessment,
   Config,
   NormalizedEnvelope,
   ReflectFinding,
+  RepoFinding,
   ScoringMode,
   StruggleRecord,
   Warnings,
@@ -67,6 +69,10 @@ export interface ScanResult {
   sessionCount: number;
   warnings: Warnings;
   exitCode: 0 | 1;
+  /** Ambient repo-level finding (null unless baseline.state === 'elevated'). */
+  finding: RepoFinding | null;
+  /** Always-populated ambient baseline assessment. */
+  baseline: BaselineAssessment;
 }
 
 /**
@@ -169,7 +175,7 @@ export async function runScan(opts: ScanOptions): Promise<ScanResult> {
 
   // 6. Run detector.
   const forceBootstrap = opts.bootstrap ?? false;
-  const records = runDetector(filtered, cfg, forceBootstrap);
+  const { records, finding, baseline } = runDetector(filtered, cfg, forceBootstrap);
 
   // 7. Aggregate areas.
   const { rows, summary } = aggregateAreas(records, cfg);
@@ -220,6 +226,8 @@ export async function runScan(opts: ScanOptions): Promise<ScanResult> {
     sessionCount: records.length,
     warnings,
     exitCode: 0,
+    finding,
+    baseline,
   };
 }
 
@@ -421,7 +429,7 @@ function buildFindingFromEnvelope(
   try {
     envelope.repo = repo;
     relativizeEnvelopeFiles(envelope, repo);
-    const records = runDetector([envelope], cfg, true);
+    const { records } = runDetector([envelope], cfg, true);
     const record = records[0] ?? degenerateRecord(envelope);
     return buildReflectFinding({ record, zero_edit });
   } catch {
