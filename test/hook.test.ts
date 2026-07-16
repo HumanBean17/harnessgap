@@ -119,19 +119,19 @@ describe('reflect finding + stop-hook renderer', () => {
     expect(out).toEqual({});
   });
 
-  it('7. privacy — reason carries no transcript prose; every output value is a primitive', () => {
-    // Seed PROSE into record fields the reason builder must NOT echo: identity
-    // fields and a 4th area key (outside the top-3 window).
+  it('7. reason renders only top-3 area keys + signal pairs; every output value is a primitive', () => {
+    // buildReason reads only `record.areas` (top-3 by weight) + `record.signals` —
+    // it never touches transcript prose (user/assistant messages, commands, file
+    // contents); that end-to-end no-prose guarantee is locked in reflect.test.ts.
+    // Here we pin that the output is bounded: a non-top-3 area is omitted and
+    // every reachable value is a primitive (no nested object holding raw text).
     const record = mkRecord({
       flagged: true,
-      session_id: PROSE,
-      repo: PROSE,
-      started_at: PROSE,
       areas: [
         { key: 'src/billing', weight: 2 },
         { key: 'src/auth', weight: 1 },
         { key: 'lib/x', weight: 0.5 },
-        { key: PROSE, weight: 0.01 }, // 4th area — not in top 3, must not leak
+        { key: PROSE, weight: 0.01 }, // 4th area — outside top 3, must not render
       ],
       signals: zeroSignals({ reread: 7 }),
     });
@@ -139,7 +139,7 @@ describe('reflect finding + stop-hook renderer', () => {
     const out = formatStopHookOutput(finding, false);
 
     expect(out.decision).toBe('block');
-    // no transcript prose anywhere in the reason
+    // the non-top-3 area (PROSE) is omitted from the reason
     expect(out.reason ?? '').not.toContain(PROSE);
     // a legit top-3 area key still appears (sanity — output is not empty)
     expect(out.reason).toContain('src/billing');
