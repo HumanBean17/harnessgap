@@ -138,6 +138,12 @@ detector:
     abandonment: true
     oscillation: 2
     wall_clock_per_line_ms: 300000
+  ambient:                         # repo-level elevated-baseline assessment (always printed)
+    breadth_floor: 4               # orientation path fires when median pre-edit dir-breadth >= this
+    file_depth_floor: 12           # ...or when median pre-edit file-depth >= this
+    struggle_rate_threshold: 0.30  # acute path fires when bootstrap struggle rate >= this
+    min_sessions: 10               # below this session count, baseline is "too few sessions"
+    severity_min_sessions: 20      # below this, an elevated finding is severity "unrated"
 
 areas:
   ignore: [node_modules, build, target, dist, .git, .next, vendor]  # path prefixes excluded from area clustering

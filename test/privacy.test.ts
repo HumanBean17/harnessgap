@@ -3,7 +3,7 @@
 // fixtures (symlinks, unresolvable cwd, oversized lines) are correctly rejected
 // and counted in warnings.
 //
-// Three sections:
+// Four sections:
 //   (a) Secret-shape: each scrubber pattern through streamSession → ***REDACTED***
 //       present in input_digest; through runScan --json → original secret absent.
 //   (b) Malformed: prose markers absent from all 3 output modes + warnings.
