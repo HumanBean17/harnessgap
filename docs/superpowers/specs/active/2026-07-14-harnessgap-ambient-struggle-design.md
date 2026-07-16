@@ -205,6 +205,10 @@ preserved exactly.
 No raw prose: signal-derived numbers, ratios, a severity label, and a `paths` set only. The
 interpretation is deliberately absent — cause is undiagnosed (§3).
 
+Note: this `RepoFinding` (repo-level, in the scan `--json` envelope — this slice) is distinct from
+Slice 3's `ReflectFinding` (session-end, the `/reflect` + Stop-hook path). Separate CLI surfaces and
+separate types — they share no field and do not interact.
+
 ### 7.2 `JsonOutput`
 
 Adds `repo_findings: RepoFinding[]` (`[]` when none). Additive; nothing else changes.
@@ -250,7 +254,7 @@ No new command or flag. The baseline finding surfaces through existing outputs:
 
 ## 9. Module / data-flow placement
 
-All additions are pure functions; the only new file is `src/detector/ambient.ts`. No new I/O, no new
+All additions are pure functions; the new files are `src/detector/orientation.ts` and `src/detector/ambient.ts`. No new I/O, no new
 dependencies. The orientation metric needs event-level data, so it is computed in the detector stage
 and surfaced to the ambient assessor — **not** read from `StruggleRecord` alone (which carries only
 `.signals`, not events). This corrects rev-1's inaccurate data-flow claim.
@@ -306,8 +310,10 @@ The normalized-event schema (Slice 1 spec §4) is untouched.
   populated `RepoFinding`, the human baseline block, and the `--calibrate` verdict contain no
   marker, and that every emitted value is a number or a closed-enum/literal. Egress + packaging
   tests pass unmodified (no new deps, no new I/O).
-- **Slice-1 regression:** corpus ≥80% bar and leaderboard snapshot **unchanged** (scorer/aggregator
-  untouched) — this is itself an assertion that the slice is non-corrupting.
+- **Non-corruption regression:** corpus ≥80% bar and leaderboard snapshot **unchanged**. The
+  snapshot baseline is the CURRENT one (post the worktree-aggregation slice, #4) — this slice must
+  not change it. Scorer/aggregator untouched; this is itself the assertion that the slice is
+  non-corrupting.
 
 ## 12. Open questions (slice-specific)
 

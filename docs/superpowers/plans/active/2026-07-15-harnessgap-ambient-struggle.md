@@ -270,8 +270,9 @@ Run: `git commit -m "feat(detector): add assessAmbient — two-path baseline fin
 
 **Files:**
 - Modify: `src/detector/index.ts` (`runDetector` signature + body).
-- Modify: `src/pipeline.ts` (destructure new return; thread to outputs; extend `ScanResult`).
+- Modify: `src/pipeline.ts` (destructure new return in BOTH `runDetector` call sites; thread to outputs; extend `ScanResult`). Note: `pipeline.ts` also holds Slice 3's `runReflect` + helpers (`buildFindingFromEnvelope`, `pickLatestEnvelope`, `degenerateRecord`, `emptyEnvelope`) — leave them untouched except for the single `runDetector` call inside `buildFindingFromEnvelope`.
 - Modify: `test/pipeline.test.ts` (smoke test of the new shape).
+- Modify: `test/detector.test.ts` (update existing `runDetector` array-return assertions to the new `{ records, finding, baseline }` shape).
 
 **Interfaces:**
 - Consumes: `computePreEditOrientation` (Task 2), `assessAmbient`/`AmbientSession` (Task 4), the enriched `SessionScore` (Task 3), `RepoFinding`/`BaselineAssessment` (Task 1).
@@ -282,6 +283,7 @@ Run: `git commit -m "feat(detector): add assessAmbient — two-path baseline fin
 **Wiring contract:**
 - In `runDetector`: compute `signals` (existing), `scores = scoreSessions(...)` (now carrying `bootstrap_composite`/`bootstrap_flagged`). Build `ambientSessions: AmbientSession[]` by zipping, per envelope index `i`: `orientation = computePreEditOrientation(envelopes[i].events)`; `{ orientation, bootstrap_composite: scores[i].bootstrap_composite, bootstrap_flagged: scores[i].bootstrap_flagged }`. Derive `scoringMode = scores[0]?.mode ?? 'bootstrap'`. Call `assessAmbient({ sessions: ambientSessions, cfg, scoringMode })` → `{ finding, baseline }`. Records are assembled exactly as before. Return `{ records, finding, baseline }`.
 - In `runScan` (`src/pipeline.ts`): replace `const records = runDetector(...)` with `const { records, finding, baseline } = runDetector(filtered, cfg, forceBootstrap);`. Pass `finding`/`baseline` into the three output branches (Tasks 6–8 wire their consumption; for this task, pass them through and the existing branches still build output — `finding`/`baseline` may be unused by a branch until that branch's task). Set `ScanResult.finding`/`.baseline`.
+- Second `runDetector` call site — `buildFindingFromEnvelope` (`src/pipeline.ts`, added by Slice 3): it currently does `const records = runDetector([envelope], cfg, true);`. Update to `const { records } = runDetector([envelope], cfg, true);`. The per-session `finding`/`baseline` are unused here — reflect builds its own `ReflectFinding`. Both call sites must be updated in this task or `tsc` fails.
 
 - [ ] **Step 1: Write a failing test in `test/pipeline.test.ts`**
 
@@ -294,7 +296,7 @@ Expected: FAIL (`runDetector` returns an array, no `.finding`).
 
 - [ ] **Step 3: Implement the wiring**
 
-Change `runDetector` to the new return shape per the wiring contract. Update `runScan` to destructure and thread `finding`/`baseline`; add the two fields to `ScanResult`. Leave the output branches calling their builders with their current args for now (Tasks 6–8 add the new args). `npm run typecheck` (`tsc --noEmit`) must pass.
+Change `runDetector` to the new return shape per the wiring contract. Update BOTH `runDetector` call sites in `src/pipeline.ts`: `runScan` (destructure `records`/`finding`/`baseline`; set `ScanResult.finding`/`.baseline`) and `buildFindingFromEnvelope` (destructure `records` only). Leave the output branches calling their builders with their current args for now (Tasks 6–8 add the new args), and leave the rest of the reflect helpers untouched. Update the existing `test/detector.test.ts` assertions that treat `runDetector(...)` as an array — e.g. `expect(runDetector([], DEFAULT_CONFIG, false)).toEqual([])` becomes `toEqual({ records: [], finding: null, baseline: <expected BaselineAssessment> })`, and every `const records = runDetector(...)` there keeps working because it destructures `records` off the new object. `npm run typecheck` (`tsc --noEmit`) must pass.
 
 - [ ] **Step 4: Run tests to verify they pass**
 
@@ -303,7 +305,7 @@ Expected: PASS.
 
 - [ ] **Step 5: Commit**
 
-Run: `git add src/detector/index.ts src/pipeline.ts test/pipeline.test.ts`
+Run: `git add src/detector/index.ts src/pipeline.ts test/pipeline.test.ts test/detector.test.ts`
 Run: `git commit -m "feat(detector): runDetector emits finding + baseline; pipeline threads them"`
 
 ---
@@ -534,7 +536,7 @@ Run: `git commit -m "test(baseline): two-repo-class calibration gate (fire/silen
 - [ ] **Step 1: Run the full suite**
 
 Run: `npm test`
-Expected: ALL PASS, including `test/corpus.test.ts` (≥80% label match) and `test/snapshot.test.ts` (leaderboard snapshot unchanged). If the snapshot diffs, that is a FAILURE — the slice corrupted per-session/per-area output; investigate (the only legitimate snapshot change would be none at all, since `StruggleRecord`/scorer/aggregator are untouched).
+Expected: ALL PASS, including `test/corpus.test.ts` (≥80% label match) and `test/snapshot.test.ts` (leaderboard snapshot unchanged). The snapshot baseline is the CURRENT one (post the worktree-aggregation slice, #4) — this slice must not change it. If the snapshot diffs, that is a FAILURE — the slice corrupted per-session/per-area output; investigate (the only legitimate snapshot change would be none at all, since `StruggleRecord`/scorer/aggregator are untouched).
 
 - [ ] **Step 2: Run typecheck + egress + packaging gates**
 
