@@ -196,6 +196,7 @@ export async function runScan(opts: ScanOptions): Promise<ScanResult> {
       flag_pct: cfg.detector.flag_pct,
       signals: records.map((r) => r.signals),
       bootstrap_thresholds: cfg.detector.bootstrap_thresholds,
+      baseline,
     });
     output = opts.json ? JSON.stringify(calObj) : formatCalibrateTable(calObj);
   } else if (opts.json) {

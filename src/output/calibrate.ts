@@ -12,6 +12,7 @@
 //   modes, so the entire abandonment entry stays uniformly 0/1.
 
 import type {
+  BaselineAssessment,
   Config,
   ScoringMode,
   SignalName,
@@ -34,6 +35,7 @@ interface CalibrateInput {
   flag_pct: number;
   signals: SignalValues[];
   bootstrap_thresholds: Config['detector']['bootstrap_thresholds'];
+  baseline: BaselineAssessment;
 }
 
 /** The calibrate aggregate-stats object (no per-session values). */
@@ -42,6 +44,7 @@ interface CalibrateObject {
   session_count: number;
   flag_pct: number;
   signals: Record<SignalName, CalibrateSignalStat>;
+  baseline: BaselineAssessment;
 }
 
 // SignalName → field on `SignalValues`. Only `wall_clock_per_line` differs
@@ -87,12 +90,12 @@ export const SIGNAL_ORDER: readonly SignalName[] = [
  * values in the output (only min/p50/p90/max/active_threshold per signal).
  */
 export function buildCalibrateObject(input: CalibrateInput): CalibrateObject {
-  const { mode, session_count, flag_pct, signals, bootstrap_thresholds } = input;
+  const { mode, session_count, flag_pct, signals, bootstrap_thresholds, baseline } = input;
   const out = {} as Record<SignalName, CalibrateSignalStat>;
   for (const name of SIGNAL_ORDER) {
     out[name] = computeStat(name, signals, mode, flag_pct, bootstrap_thresholds);
   }
-  return { mode, session_count, flag_pct, signals: out };
+  return { mode, session_count, flag_pct, signals: out, baseline };
 }
 
 /**
@@ -206,5 +209,10 @@ export function formatCalibrateTable(obj: ReturnType<typeof buildCalibrateObject
       `${name.padEnd(22)} | ${String(s.min).padStart(10)} | ${String(s.p50).padStart(10)} | ${String(s.p90).padStart(10)} | ${String(s.max).padStart(10)} | ${String(s.active_threshold).padStart(10)}`,
     );
   }
+  const o = obj.baseline.orientation;
+  const fragment = o !== null ? `${o.median_dir_breadth} dirs / ${o.median_file_depth} files` : 'n/a';
+  lines.push(
+    `BASELINE — ${obj.baseline.state} · orientation ${fragment} · zero-edit ${(obj.baseline.zero_edit_fraction * 100).toFixed(0)}% · acute struggle rate ${(obj.baseline.acute.struggle_rate * 100).toFixed(0)}% (threshold ${(obj.baseline.acute.struggle_rate_threshold * 100).toFixed(0)}%)`,
+  );
   return lines.join('\n');
 }

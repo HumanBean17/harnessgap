@@ -309,6 +309,7 @@ describe('output formatters', () => {
       flag_pct: 90,
       signals,
       bootstrap_thresholds: BOOTSTRAP_THRESHOLDS,
+      baseline: mkBaseline(),
     });
 
     expect(obj.mode).toBe('percentile');
@@ -362,6 +363,7 @@ describe('output formatters', () => {
       flag_pct: 90,
       signals,
       bootstrap_thresholds: BOOTSTRAP_THRESHOLDS,
+      baseline: mkBaseline(),
     });
     const table = formatCalibrateTable(obj);
 
@@ -761,5 +763,91 @@ describe('output formatters', () => {
     expect(out).toContain(
       'BASELINE — within norms · orientation n/a · zero-edit 0% · acute 0%',
     );
+  });
+
+  // --- Task 8: baseline assessment in --calibrate ---
+
+  it('16. buildCalibrateObject — baseline is projected verbatim onto the returned object', () => {
+    const baseline: BaselineAssessment = {
+      state: 'within-norms',
+      sessions_sampled: 20,
+      scoring_mode: 'percentile',
+      orientation: {
+        median_dir_breadth: 2,
+        median_file_depth: 6,
+        breadth_floor: 4,
+        file_depth_floor: 12,
+        with_edit_sessions: 18,
+      },
+      zero_edit_fraction: 0.1,
+      acute: { struggle_rate: 0.05, struggle_rate_threshold: 0.3 },
+    };
+
+    const obj = buildCalibrateObject({
+      mode: 'percentile',
+      session_count: 20,
+      flag_pct: 90,
+      signals: [],
+      bootstrap_thresholds: BOOTSTRAP_THRESHOLDS,
+      baseline,
+    });
+
+    expect(obj.baseline).toEqual(baseline);
+  });
+
+  it('17. formatCalibrateTable — emits BASELINE line with state, orientation fragment, zero-edit pct, acute rate and threshold pct (whole percent)', () => {
+    const baseline = mkBaseline({
+      state: 'within-norms',
+      orientation: mkOrientation({ median_dir_breadth: 2, median_file_depth: 6 }),
+      zero_edit_fraction: 0.1,
+      acute: { struggle_rate: 0.05, struggle_rate_threshold: 0.3 },
+    });
+
+    const obj = buildCalibrateObject({
+      mode: 'percentile',
+      session_count: 20,
+      flag_pct: 90,
+      signals: [],
+      bootstrap_thresholds: BOOTSTRAP_THRESHOLDS,
+      baseline,
+    });
+    const table = formatCalibrateTable(obj);
+
+    // state enum appears
+    expect(table).toContain('BASELINE — within-norms');
+    // orientation medians fragment
+    expect(table).toContain('orientation 2 dirs / 6 files');
+    // whole-percent zero-edit and acute rate
+    expect(table).toContain('zero-edit 10%');
+    expect(table).toContain('acute struggle rate 5%');
+    // acute threshold whole-percent
+    expect(table).toContain('(threshold 30%)');
+  });
+
+  it('18. formatCalibrateTable — BASELINE line shows "orientation n/a" when baseline.orientation is null', () => {
+    const baseline = mkBaseline({
+      state: 'within-norms',
+      orientation: null,
+      zero_edit_fraction: 0.1,
+      acute: { struggle_rate: 0.05, struggle_rate_threshold: 0.3 },
+    });
+
+    const obj = buildCalibrateObject({
+      mode: 'percentile',
+      session_count: 20,
+      flag_pct: 90,
+      signals: [],
+      bootstrap_thresholds: BOOTSTRAP_THRESHOLDS,
+      baseline,
+    });
+    const table = formatCalibrateTable(obj);
+
+    expect(table).toContain('BASELINE — within-norms');
+    expect(table).toContain('orientation n/a');
+    // The medians fragment must not appear when orientation is null.
+    expect(table).not.toContain('dirs /');
+    // Acute numbers still render.
+    expect(table).toContain('zero-edit 10%');
+    expect(table).toContain('(threshold 30%)');
   });
 });
