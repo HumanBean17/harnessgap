@@ -186,3 +186,46 @@ export interface Config {
     test_cmd_patterns: string[];
   };
 }
+
+/**
+ * Session-end reflect finding: the pure decision artifact built from one
+ * `StruggleRecord`. `trip` is the derived block decision; the record reference
+ * is carried through unchanged. schema_version is pinned to 1.
+ */
+export interface ReflectFinding {
+  schema_version: 1;
+  session_id: string;
+  repo: string;
+  mode: ScoringMode;
+  record: StruggleRecord;
+  trip: boolean;
+  zero_edit: boolean;
+}
+
+/**
+ * The payload a Claude Code `Stop` hook accepts. Two forms: the block form
+ * `{ decision: 'block', reason }` asks the agent to reflect; the allow form is
+ * a literal empty object `{}`. Expressed with optional fields so both shapes
+ * are assignable — callers must return either `{}` or a fully-populated block
+ * object, never a partial block.
+ */
+export interface StopHookOutput {
+  decision?: 'block';
+  reason?: string;
+}
+
+/**
+ * Documented contract for the `/reflect` command's manual frame — produced by
+ * the agent, never emitted by the binary. Defined here so the command and tests
+ * share one shape.
+ */
+export interface ReflectFrame {
+  cost: string;
+  missing: string;
+  change: {
+    target_path: string;
+    kind: 'add' | 'improve' | 'none';
+    rationale: string;
+  };
+  path_verified: boolean;
+}

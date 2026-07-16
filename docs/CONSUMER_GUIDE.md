@@ -271,12 +271,110 @@ Use `--calibrate` to see which mode is active and the distributions behind it.
 
 ---
 
+## Session-end reflect (`reflect` + `init claude`, Slice 3)
+
+Slice 3 adds an **event-driven** entry to the detector: instead of a batch
+leaderboard, `harnessgap reflect` runs the detector on a **single** session and
+emits a `ReflectFinding` whose `trip = flagged && !zero_edit` decides whether to
+prompt reflection. `harnessgap init claude` wires it into a trip-gated Claude
+Code `Stop` hook so reflection happens automatically when a session ends.
+
+The detection core is unchanged — `reflect` reuses the same detector and
+bootstrap mode as `scan`. No new config keys, no new dependencies.
+
+### Install the hook
+
+```
+harnessgap init claude
+```
+
+Writes three artifacts under `<cwd>/.claude/` (idempotent — safe to re-run):
+
+- **fail-open Stop-hook wrapper** (`harnessgap-stop-hook.js`) — on every stop it
+  runs `harnessgap reflect --transcript <just-finished> --format hook-stop`. Any
+  fault (missing transcript, spawn error, non-zero exit) short-circuits to `{}` —
+  the hook never blocks on a harnessgap error.
+- **`settings.json` merge** — appends the harnessgap command to `hooks.Stop`
+  exactly once (deduped by command string); all your existing hooks and keys are
+  preserved.
+- **`/reflect` command** (`commands/reflect.md`) — agent guidance, not detection.
+
+### What happens on stop
+
+The hook blocks the stop **only when `trip` is true**, returning
+`{ "decision": "block", "reason": … }`. The `reason` is a static reflection
+prompt plus a derived-only summary (up to 3 top area keys + active signals) —
+**no transcript prose**. Otherwise it returns `{}` and the session ends normally.
+`stop_hook_active` guards against loops.
+
+When blocked, the `/reflect` command (or the agent directly) reads the finding
+and fills one **`ReflectFrame`**:
+
+| Field | Meaning |
+| --- | --- |
+| `cost` | The friction cost this session, tied to the finding's top signal. |
+| `missing` | The context that would have helped (a doc, a type, a missing test). |
+| `change.target_path` | A repo-relative path to add or improve. |
+| `change.kind` | `add` \| `improve` \| `none`. |
+| `change.rationale` | Why this change targets the observed cost. |
+| `path_verified` | `true` only if `target_path` (or its parent dir for an `add`) was confirmed to exist. |
+
+The agent presents the recommendation in-session and the user acts on it —
+**nothing is auto-written to the repo**, and a clean session emits
+`change.kind: "none"`.
+
+### `reflect` flags
+
+| Flag | Default | Description |
+| --- | --- | --- |
+| `--transcript <path>` | — | Reflect on one given transcript file (the per-stop hook path; cheap). |
+| `--latest` | off | Reflect on the most-recent finished session for `--repo` (the manual `/reflect` path). |
+| `--repo <path>` | main repo of the cwd | Target repo toplevel, used with `--latest` (resolved to the project's main repo). |
+| `--exclude-session <id>` | — | Exclude a session id, used with `--latest`. |
+| `--stop-hook-active` | off | Mark the Claude Code Stop hook as already active (short-circuit to allow). |
+| `--format <json\|hook-stop>` | `json` | Output form: the json `ReflectFinding` or the `Stop` hook payload. |
+| `--config <path>` | `.harnessgap.yml` in cwd | Path to a config file. |
+| `--claude-dir <path>` | `~/.claude` | Claude Code config directory (contains `projects/`). |
+
+### `ReflectFinding` (`--format json`)
+
+```jsonc
+{
+  "schema_version": 1,
+  "session_id": "...",
+  "repo": "/home/me/myapp",
+  "mode": "bootstrap",
+  "record": { /* the full StruggleRecord — derived signals/areas only, no prose */ },
+  "trip": true,          // = record.flagged && !zero_edit
+  "zero_edit": false     // no edits this session → trip forced false
+}
+```
+
+### Calibration notes (dogfood, not promises)
+
+`trip = flagged && !zero_edit` reuses the bootstrap flag — calibrated for the
+*batch* leaderboard, not a per-session *interruption*. At n=1 it may fire on
+ordinary sessions (e.g. one debug loop hitting `reread` + `wall_clock`).
+Trip-gate sensitivity is the top open question for this slice: measure how often
+the hook fires on clean sessions, and if too often, tighten it via one of:
+
+- drop the `≥ 2 signals` disjunction and require `composite ≥ bootstrap_flag_pct`;
+- raise the trip requirement to `≥ k` signals (e.g. k=3);
+- add a dedicated `detector.reflect` config block.
+
+The `ReflectFrame` is LLM-generated and advisory — structure + `path_verified`
+mitigate but do not eliminate generic advice, and `path_verified` is
+self-attested. The slice ships the mechanism + a deterministic spine; quality is
+bounded by the model.
+
+---
+
 ## Privacy
 
 harnessgap runs offline on private transcripts. Five guarantees:
 
 1. **No network.** No `fetch` / `http` / `https` / `net` / `undici` imports and no `fetch()` calls anywhere in `src/`. Transcripts never leave the machine. Enforced by `test/egress.test.ts`.
-2. **No disk writes.** harnessgap writes nothing to disk — it reads transcripts and prints to stdout. (OS-level page cache/swap are out of scope and common to any process that reads files.)
+2. **No disk writes (detection path).** `scan` and `reflect` write nothing to disk — they read transcripts and print to stdout. (`harnessgap init claude` is the one exception: an explicit opt-in installer that writes the Stop-hook wrapper, a `settings.json` merge, and the `/reflect` command under `.claude/`.) (OS-level page cache/swap are out of scope and common to any process that reads files.)
 3. **Pattern-catalog scrubbing.** Secrets are scrubbed in the adapter, before events enter the pipeline, using a fixed pattern catalog (API keys, bearer tokens, private keys, URL-embedded credentials, credential-file paths, known-format tokens). No entropy heuristic — nothing is guessed.
 4. **No raw prose in output.** Only derived signal values, scores, counts, paths, and integer warning counts are emitted. Raw message text, commands, and transcript line content never appear in any output path (human table, `--json`, `--calibrate`, warnings).
 5. **Stat-based repo resolution (no git invocation).** The repo for each session is found by walking up from its cwd and `stat`-ing `<ancestor>/.git` — no `git` process is spawned at all (so nothing lands in shell history, and the earlier sandbox/env-var concerns are moot). Worktree checkouts (`.git` file) resolve up to the main repo (`.git` directory), so a project's main checkout and all worktrees aggregate together; sessions whose cwd was a since-deleted worktree are recovered the same way. Symlinks in transcript directories are rejected via `lstat`.
