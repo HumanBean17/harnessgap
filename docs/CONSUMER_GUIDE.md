@@ -149,6 +149,8 @@ A column-aligned table:
 
 ```
 harnessgap scan — repo: /home/me/myapp · 142 sessions · mode: percentile
+BASELINE — within norms · orientation 2 dirs / 6 files · zero-edit 36% · acute 4%
+
 AREA                                | FLAGGED | MEAN SCORE | TOP SIGNALS
 src/billing                         |       7 |       82.4 | failure_streak, reread
 src/auth                            |       5 |       74.1 | oscillation, corrections
