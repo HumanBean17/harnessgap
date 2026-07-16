@@ -8,6 +8,7 @@ import {
 import { DEFAULT_CONFIG } from '../src/config.js';
 import type {
   AreaRow,
+  RepoFinding,
   SignalName,
   SignalValues,
   StruggleRecord,
@@ -367,8 +368,95 @@ describe('output formatters', () => {
     expect(out).toContain('2 truncated sessions');
     // zero-count categories are omitted
     expect(out).not.toContain('oversized');
-    expect(out).not.toContain('skipped');
     expect(out).not.toContain('symlink');
+    expect(out).not.toContain('skipped');
     expect(out).not.toContain('unresolvable');
+  });
+
+  it('7. buildJsonEnvelope — repo_findings: [] is projected verbatim onto the envelope', () => {
+    const warnings: Warnings = {
+      malformed_lines: 0,
+      oversized_lines: 0,
+      skipped_sessions: 0,
+      truncated_sessions: 0,
+      symlinks_rejected: 0,
+      unresolvable_cwd: 0,
+    };
+    const sessions: StruggleRecord[] = [mkRecord()];
+    const areas: AreaRow[] = [];
+
+    const out = buildJsonEnvelope({
+      repo: 'r',
+      mode: 'bootstrap',
+      session_count: 1,
+      warnings,
+      sessions,
+      areas,
+      repo_findings: [],
+    });
+
+    expect(out.repo_findings).toEqual([]);
+  });
+
+  it('8. buildJsonEnvelope — repo_findings: [<finding>] projected with schema_version=1 and other fields unchanged', () => {
+    const warnings: Warnings = {
+      malformed_lines: 1,
+      oversized_lines: 0,
+      skipped_sessions: 0,
+      truncated_sessions: 0,
+      symlinks_rejected: 0,
+      unresolvable_cwd: 0,
+    };
+    const sessions: StruggleRecord[] = [
+      mkRecord({ session_id: 's1', score_pct: 50 }),
+    ];
+    const areas: AreaRow[] = [
+      {
+        key: 'src/x',
+        sessions_total: 1,
+        sessions_flagged: 1,
+        mean_score: 50,
+        top_signals: [{ name: 'reread', value: 3, display: 'reread(3)' }],
+      },
+    ];
+    const finding: RepoFinding = {
+      kind: 'elevated-baseline',
+      severity: 'high',
+      paths: ['orientation'],
+      sessions_sampled: 20,
+      scoring_mode: 'percentile',
+      orientation: {
+        median_dir_breadth: 6,
+        median_file_depth: 18,
+        breadth_floor: 4,
+        file_depth_floor: 12,
+        with_edit_sessions: 20,
+      },
+      zero_edit_fraction: 0,
+      acute: { struggle_rate: 0, struggle_rate_threshold: 0.3 },
+    };
+
+    const out = buildJsonEnvelope({
+      repo: 'r',
+      mode: 'percentile',
+      session_count: 1,
+      warnings,
+      sessions,
+      areas,
+      repo_findings: [finding],
+    });
+
+    // schema_version pinned to 1
+    expect(out.schema_version).toBe(1);
+    // repo_findings carries the projected finding verbatim
+    expect(out.repo_findings).toHaveLength(1);
+    expect(out.repo_findings[0]).toEqual(finding);
+    // other existing fields unchanged
+    expect(out.sessions).toBe(sessions);
+    expect(out.areas).toBe(areas);
+    expect(out.warnings).toEqual(warnings);
+    expect(out.repo).toBe('r');
+    expect(out.mode).toBe('percentile');
+    expect(out.session_count).toBe(1);
   });
 });

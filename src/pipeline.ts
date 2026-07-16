@@ -207,6 +207,7 @@ export async function runScan(opts: ScanOptions): Promise<ScanResult> {
         warnings,
         sessions: records,
         areas: rows,
+        repo_findings: finding ? [finding] : [],
       }),
     );
   } else {

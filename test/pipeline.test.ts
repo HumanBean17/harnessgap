@@ -158,6 +158,9 @@ describe('runScan (pipeline orchestration)', () => {
     expect(Array.isArray(parsed.areas)).toBe(true);
     // Warnings are projected into the JSON envelope.
     expect(parsed.warnings).toEqual(result.warnings);
+    // Within-norms fixture (2 sessions < min_sessions): no elevated baseline,
+    // no finding → repo_findings is projected as the empty array.
+    expect(parsed.repo_findings).toEqual([]);
   });
 
   it('3. --bootstrap → mode==="bootstrap" (flag threaded, sessions scanned)', async () => {
