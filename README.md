@@ -52,6 +52,62 @@ leaderboard of struggle areas.
 | `--version` | Print the harnessgap version and exit. |
 | `--help` | Print help and exit. |
 
+## Session-end reflect (Slice 3)
+
+`harnessgap reflect` runs the detector on a **single** session (the one just
+finished) and emits a `ReflectFinding` whose `trip = flagged && !zero_edit`
+decides whether to prompt reflection. `harnessgap init claude` wires that into a
+trip-gated Claude Code `Stop` hook so reflection happens automatically at session
+end. The detection core is unchanged from Slice 1/2 — `reflect` reuses the same
+detector + bootstrap mode.
+
+### `init claude`
+
+```
+harnessgap init claude
+```
+
+Installs three artifacts under `<cwd>/.claude/` (idempotent — re-run to refresh):
+
+- a **fail-open Stop-hook wrapper** — on every stop it runs
+  `harnessgap reflect --transcript <just-finished> --format hook-stop`; any fault
+  short-circuits to `{}` so the hook never blocks on a harnessgap error.
+- an idempotent **`settings.json`** merge — appends the harnessgap command to
+  `hooks.Stop` exactly once, preserving your existing hooks and keys.
+- the **`/reflect` command** — guides filling one `ReflectFrame` (cost → missing
+  context → one suggested change with a path-checked `target_path`).
+
+The hook blocks the stop **only when `trip` is true**, returning
+`{ "decision": "block", "reason": … }` (the `reason` carries the finding summary
+— top friction areas + active signals; no transcript prose). Otherwise it returns
+`{}` and the session ends normally. `stop_hook_active` guards against loops. The
+agent presents the recommendation in-session and the user acts — **nothing is
+auto-written to the repo**.
+
+### `reflect` flags
+
+| Flag | Description |
+| --- | --- |
+| `--transcript <path>` | Reflect on one given transcript file (the per-stop hook path). |
+| `--latest` | Reflect on the most-recent finished session for `--repo` (the manual `/reflect` path). |
+| `--repo <path>` | Target repo toplevel, used with `--latest` (resolved to the project's main repo, like `scan`). |
+| `--exclude-session <id>` | Exclude a session id, used with `--latest`. |
+| `--stop-hook-active` | Mark the Claude Code Stop hook as already active (short-circuit to allow). |
+| `--format <json\|hook-stop>` | Output form: the json `ReflectFinding` (default) or the `Stop` hook payload. |
+| `--config <path>` | Path to a `.harnessgap.yml` config file. |
+| `--claude-dir <path>` | Claude Code config directory (contains `projects/`). Default: `~/.claude`. |
+
+### Calibration notes (dogfood, not promises)
+
+`trip = flagged && !zero_edit` reuses the bootstrap flag — calibrated for the
+*batch* leaderboard, not a per-session *interruption*. At n=1 it may fire on
+ordinary sessions (e.g. a single debug loop hitting `reread` + `wall_clock`).
+Trip-gate sensitivity is the top open question for this slice: measure how often
+the hook fires on clean sessions, and if too often, tighten it (drop the
+`≥ 2 signals` disjunction, require `≥ k`, or add a `detector.reflect` block). The
+`ReflectFrame` recommendation is advisory and human-reviewed; `path_verified` is
+self-attested.
+
 ## Configuration (`.harnessgap.yml`)
 
 Optional. `scan` runs with built-in defaults if no file is present. The file is
@@ -124,9 +180,11 @@ harnessgap is built to run offline on private transcripts. Five guarantees:
    no `fetch()` calls anywhere in `src/`. Transcripts never leave the machine.
    Enforced by `test/egress.test.ts`, which scans every `src/**/*.ts` file for
    forbidden network imports and fetch calls, and runs in CI.
-2. **No disk writes.** harnessgap writes nothing to disk. It reads transcripts
-   and prints to stdout. (OS-level page cache/swap are out of scope and common
-   to any process that reads files.)
+2. **No disk writes (detection path).** `scan` and `reflect` write nothing to
+   disk — they read transcripts and print to stdout. (`harnessgap init claude` is
+   the one exception: an explicit opt-in installer that writes the Stop-hook
+   wrapper, a `settings.json` merge, and the `/reflect` command under `.claude/`.)
+   (OS-level page cache/swap are out of scope and common to any process that reads files.)
 3. **Pattern-catalog scrubbing.** Secrets are scrubbed in the adapter, before
    events enter the pipeline, using a fixed pattern catalog (API keys, bearer
    tokens, private keys, connection strings, etc.).
