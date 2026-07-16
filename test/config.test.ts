@@ -93,3 +93,64 @@ describe('config loader', () => {
     expect(() => parseDuration('abc')).toThrow(ConfigError);
   });
 });
+
+describe('detector.ambient validation', () => {
+  it('DEFAULT_CONFIG.detector.ambient equals the verbatim spec object', () => {
+    expect(DEFAULT_CONFIG.detector.ambient).toEqual({
+      breadth_floor: 4,
+      file_depth_floor: 12,
+      struggle_rate_threshold: 0.3,
+      min_sessions: 10,
+      severity_min_sessions: 20,
+    });
+  });
+
+  it('throws ConfigError naming struggle_rate_threshold when it is 1.5', () => {
+    const path = writeTmpConfig(
+      'detector:\n  ambient:\n    struggle_rate_threshold: 1.5\n',
+    );
+    try {
+      loadConfig(path);
+      throw new Error('expected loadConfig to throw');
+    } catch (e) {
+      expect(e).toBeInstanceOf(ConfigError);
+      expect((e as Error).message).toContain(
+        'detector.ambient.struggle_rate_threshold',
+      );
+    }
+  });
+
+  it('throws ConfigError when breadth_floor is 0', () => {
+    const path = writeTmpConfig(
+      'detector:\n  ambient:\n    breadth_floor: 0\n',
+    );
+    expect(() => loadConfig(path)).toThrow(ConfigError);
+  });
+
+  it('throws ConfigError when min_sessions is 0', () => {
+    const path = writeTmpConfig(
+      'detector:\n  ambient:\n    min_sessions: 0\n',
+    );
+    expect(() => loadConfig(path)).toThrow(ConfigError);
+  });
+
+  it('throws ConfigError when severity_min_sessions (5) < min_sessions (10)', () => {
+    const path = writeTmpConfig(
+      'detector:\n  ambient:\n    severity_min_sessions: 5\n',
+    );
+    expect(() => loadConfig(path)).toThrow(ConfigError);
+  });
+
+  it('valid override breadth_floor: 8 deep-merges and loads', () => {
+    const path = writeTmpConfig(
+      'detector:\n  ambient:\n    breadth_floor: 8\n',
+    );
+    const cfg = loadConfig(path);
+    expect(cfg.detector.ambient.breadth_floor).toBe(8);
+    // untouched defaults preserved
+    expect(cfg.detector.ambient.file_depth_floor).toBe(12);
+    expect(cfg.detector.ambient.struggle_rate_threshold).toBe(0.3);
+    expect(cfg.detector.ambient.min_sessions).toBe(10);
+    expect(cfg.detector.ambient.severity_min_sessions).toBe(20);
+  });
+});

@@ -36,5 +36,8 @@ export function buildJsonEnvelope(input: JsonEnvelopeInput): JsonOutput {
     warnings: input.warnings,
     sessions: input.sessions,
     areas: input.areas,
+    // Slice 2 foundation: repo_findings is wired up by later tasks; default
+    // to empty so the envelope shape matches JsonOutput today.
+    repo_findings: [],
   };
 }
