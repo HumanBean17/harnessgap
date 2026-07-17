@@ -72,6 +72,14 @@ export const DEFAULT_CONFIG: Config = {
       'vitest',
     ],
   },
+  docs_dirs: ['docs'],
+  diagnose: {
+    confidence_floor: 0.5,
+    config_share_floor: 0.5,
+    test_share_floor: 0.5,
+    code_share_floor: 0.5,
+    score_floor: 70,
+  },
 };
 
 const DURATION_RE = /^(\d+)([dhms])$/;
@@ -101,7 +109,7 @@ export function parseDuration(s: string | undefined): number {
   }
 }
 
-const KNOWN_TOP_KEYS = new Set(['detector', 'areas']);
+const KNOWN_TOP_KEYS = new Set(['detector', 'areas', 'docs_dirs', 'diagnose']);
 
 function isPlainObject(v: unknown): v is Record<string, unknown> {
   return typeof v === 'object' && v !== null && !Array.isArray(v);
@@ -192,6 +200,32 @@ function validateConfig(cfg: Config): void {
   const mw = cfg.areas.min_weight;
   if (mw < 0 || mw > 1) {
     throw new ConfigError(`areas.min_weight must be in [0,1], got ${mw}`);
+  }
+  const dg = cfg.diagnose;
+  if (dg.confidence_floor < 0 || dg.confidence_floor > 1) {
+    throw new ConfigError(
+      `diagnose.confidence_floor must be in [0,1], got ${dg.confidence_floor}`,
+    );
+  }
+  if (dg.config_share_floor < 0 || dg.config_share_floor > 1) {
+    throw new ConfigError(
+      `diagnose.config_share_floor must be in [0,1], got ${dg.config_share_floor}`,
+    );
+  }
+  if (dg.test_share_floor < 0 || dg.test_share_floor > 1) {
+    throw new ConfigError(
+      `diagnose.test_share_floor must be in [0,1], got ${dg.test_share_floor}`,
+    );
+  }
+  if (dg.code_share_floor < 0 || dg.code_share_floor > 1) {
+    throw new ConfigError(
+      `diagnose.code_share_floor must be in [0,1], got ${dg.code_share_floor}`,
+    );
+  }
+  if (dg.score_floor < 0 || dg.score_floor > 100) {
+    throw new ConfigError(
+      `diagnose.score_floor must be in [0,100], got ${dg.score_floor}`,
+    );
   }
 }
 

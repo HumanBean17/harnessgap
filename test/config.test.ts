@@ -154,3 +154,89 @@ describe('detector.ambient validation', () => {
     expect(cfg.detector.ambient.severity_min_sessions).toBe(20);
   });
 });
+
+describe('docs_dirs and diagnose config (Slice 4 Task 1)', () => {
+  it('DEFAULT_CONFIG.docs_dirs === ["docs"] and diagnose defaults are verbatim', () => {
+    expect(DEFAULT_CONFIG.docs_dirs).toEqual(['docs']);
+    expect(DEFAULT_CONFIG.diagnose).toEqual({
+      confidence_floor: 0.5,
+      config_share_floor: 0.5,
+      test_share_floor: 0.5,
+      code_share_floor: 0.5,
+      score_floor: 70,
+    });
+  });
+
+  it('loadConfig() with no file has docs_dirs === ["docs"] and diagnose.confidence_floor === 0.5', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'harnessgap-s4-defaults-'));
+    const originalCwd = process.cwd();
+    try {
+      process.chdir(dir);
+      const cfg = loadConfig();
+      expect(cfg.docs_dirs).toEqual(['docs']);
+      expect(cfg.diagnose.confidence_floor).toBe(0.5);
+    } finally {
+      process.chdir(originalCwd);
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('loadConfig(path) parses docs_dirs: [doc, docs/arch] to those paths', () => {
+    const path = writeTmpConfig('docs_dirs: [doc, docs/arch]\n');
+    const cfg = loadConfig(path);
+    expect(cfg.docs_dirs).toEqual(['doc', 'docs/arch']);
+  });
+
+  it('loadConfig(path) deep-merges diagnose.confidence_floor: 0.6, keeping other diagnose defaults', () => {
+    const path = writeTmpConfig('diagnose:\n  confidence_floor: 0.6\n');
+    const cfg = loadConfig(path);
+    expect(cfg.diagnose.confidence_floor).toBe(0.6);
+    // untouched defaults preserved
+    expect(cfg.diagnose.config_share_floor).toBe(0.5);
+    expect(cfg.diagnose.test_share_floor).toBe(0.5);
+    expect(cfg.diagnose.code_share_floor).toBe(0.5);
+    expect(cfg.diagnose.score_floor).toBe(70);
+  });
+
+  it('loadConfig(path) with unknown top-level key synthesizer: throws ConfigError', () => {
+    const path = writeTmpConfig('synthesizer:\n  enabled: true\n');
+    expect(() => loadConfig(path)).toThrow(ConfigError);
+  });
+
+  it('throws ConfigError when diagnose.confidence_floor is 1.5 (must be in [0,1])', () => {
+    const path = writeTmpConfig('diagnose:\n  confidence_floor: 1.5\n');
+    try {
+      loadConfig(path);
+      throw new Error('expected loadConfig to throw');
+    } catch (e) {
+      expect(e).toBeInstanceOf(ConfigError);
+      expect((e as Error).message).toContain('diagnose.confidence_floor');
+    }
+  });
+
+  it('throws ConfigError when diagnose.config_share_floor is -0.1 (must be in [0,1])', () => {
+    const path = writeTmpConfig('diagnose:\n  config_share_floor: -0.1\n');
+    expect(() => loadConfig(path)).toThrow(ConfigError);
+  });
+
+  it('throws ConfigError when diagnose.test_share_floor is 1.5 (must be in [0,1])', () => {
+    const path = writeTmpConfig('diagnose:\n  test_share_floor: 1.5\n');
+    expect(() => loadConfig(path)).toThrow(ConfigError);
+  });
+
+  it('throws ConfigError when diagnose.code_share_floor is -0.5 (must be in [0,1])', () => {
+    const path = writeTmpConfig('diagnose:\n  code_share_floor: -0.5\n');
+    expect(() => loadConfig(path)).toThrow(ConfigError);
+  });
+
+  it('throws ConfigError when diagnose.score_floor is 200 (must be in [0,100])', () => {
+    const path = writeTmpConfig('diagnose:\n  score_floor: 200\n');
+    try {
+      loadConfig(path);
+      throw new Error('expected loadConfig to throw');
+    } catch (e) {
+      expect(e).toBeInstanceOf(ConfigError);
+      expect((e as Error).message).toContain('diagnose.score_floor');
+    }
+  });
+});
