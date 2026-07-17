@@ -7,6 +7,7 @@
 import type {
   AreaRow,
   JsonOutput,
+  RepoFinding,
   ScoringMode,
   StruggleRecord,
   Warnings,
@@ -20,6 +21,7 @@ interface JsonEnvelopeInput {
   warnings: Warnings;
   sessions: StruggleRecord[];
   areas: AreaRow[];
+  repo_findings: RepoFinding[];
 }
 
 /**
@@ -36,5 +38,6 @@ export function buildJsonEnvelope(input: JsonEnvelopeInput): JsonOutput {
     warnings: input.warnings,
     sessions: input.sessions,
     areas: input.areas,
+    repo_findings: input.repo_findings,
   };
 }

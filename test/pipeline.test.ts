@@ -5,7 +5,9 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { runScan } from '../src/pipeline.js';
-import type { JsonOutput } from '../src/types.js';
+import { runDetector } from '../src/detector/index.js';
+import { DEFAULT_CONFIG } from '../src/config.js';
+import type { JsonOutput, NormalizedEnvelope, NormalizedEvent } from '../src/types.js';
 
 // Pipeline orchestration tests: build a real temp claudeDir + temp git repo,
 // write real .jsonl transcripts, and exercise runScan end-to-end. No mocking —
@@ -156,6 +158,9 @@ describe('runScan (pipeline orchestration)', () => {
     expect(Array.isArray(parsed.areas)).toBe(true);
     // Warnings are projected into the JSON envelope.
     expect(parsed.warnings).toEqual(result.warnings);
+    // Within-norms fixture (2 sessions < min_sessions): no elevated baseline,
+    // no finding → repo_findings is projected as the empty array.
+    expect(parsed.repo_findings).toEqual([]);
   });
 
   it('3. --bootstrap → mode==="bootstrap" (flag threaded, sessions scanned)', async () => {
@@ -223,5 +228,85 @@ describe('runScan (pipeline orchestration)', () => {
     expect(parsed).not.toHaveProperty('schema_version');
     expect(parsed).not.toHaveProperty('sessions');
     expect(parsed).not.toHaveProperty('areas');
+  });
+});
+
+// Pure-detector smoke test for the ambient finding + baseline wiring
+// (Slice 2, Task 5). Builds NormalizedEnvelope[] directly — no I/O — and
+// exercises the runDetector → assessAmbient path end-to-end. The corpus is
+// ten high-orientation sessions (each reads files across 5 distinct depth-2
+// dirs, then edits), which trips the orientation path of assessAmbient and
+// produces an elevated baseline.
+
+describe('runDetector (ambient finding + baseline)', () => {
+  it('emits a RepoFinding on the orientation path + elevated baseline for 10 high-orientation sessions', () => {
+    // Each session: 5 dirs × 3 distinct files = 15 reads (dirBreadth=5,
+    // fileDepth=15), then one edit. Both medians clear the §7 floors
+    // (breadth_floor=4, file_depth_floor=12).
+    const envelopes: NormalizedEnvelope[] = Array.from({ length: 10 }, (_, i) => {
+      const events: NormalizedEvent[] = [];
+      let ms = 0;
+      for (let d = 0; d < 5; d++) {
+        for (let f = 0; f < 3; f++) {
+          events.push({
+            t: new Date(ms).toISOString(),
+            kind: 'tool_call',
+            tool: 'read',
+            input_digest: {
+              files: [`src/dir${d}/file${f}.ts`],
+              cmd: null,
+              query: null,
+              lines_changed: null,
+            },
+            ok: true,
+            interrupted: false,
+            duration_ms: 0,
+            correction: null,
+          });
+          ms += 1000;
+        }
+      }
+      // First edit comes after orientation → computePreEditOrientation is non-null.
+      events.push({
+        t: new Date(ms).toISOString(),
+        kind: 'tool_call',
+        tool: 'edit',
+        input_digest: {
+          files: ['src/dir0/file0.ts'],
+          cmd: null,
+          query: null,
+          lines_changed: 5,
+        },
+        ok: true,
+        interrupted: false,
+        duration_ms: 0,
+        correction: null,
+      });
+
+      return {
+        schema_version: 1 as const,
+        session_id: `s${i}`,
+        agent: 'claude-code' as const,
+        repo: 'test/repo',
+        started_at: events[0]!.t,
+        duration_ms: ms,
+        events,
+        truncated: false,
+        event_count: events.length,
+      };
+    });
+
+    const result = runDetector(envelopes, structuredClone(DEFAULT_CONFIG), false);
+
+    // Records: one per envelope, byte-identical to Slice 1 behaviour.
+    expect(result.records.length).toBe(10);
+
+    // Finding: orientation path fires (median_dir_breadth=5 >= 4), so the
+    // finding is populated and carries 'orientation' in its paths.
+    expect(result.finding).not.toBeNull();
+    expect(result.finding!.paths).toContain('orientation');
+
+    // Baseline: 10 sessions ≥ min_sessions=10, orientation path fired → elevated.
+    expect(result.baseline.state).toBe('elevated');
   });
 });

@@ -176,11 +176,15 @@ unharnessed ≈ 15–40 files / many dirs). Final values are fixed by the gate, 
 to the fixed values before merge. Sensitivity is documented: moving any floor by ±20% must not flip
 the dogfood repos across the fire/no-fire line.
 
-## 7. Contracts (minimal, additive — `StruggleRecord`/`flagged`/scorer untouched)
+## 7. Contracts (minimal, additive — `StruggleRecord`/`flagged`/scoring semantics untouched)
 
-Dropping the overlay (§2) means **no change** to `StruggleRecord`, `flagged`, `SessionScore`, the
-scorer, or the area aggregator. Slice 1's `mean_score` / `top_signals` / sort semantics are
-preserved exactly.
+Dropping the overlay (§2) means **no change** to `StruggleRecord`, `flagged`, the area
+aggregator, or Slice 1's scoring semantics (`mean_score` / `top_signals` / sort, and the four
+existing `SessionScore` fields `score_pct` / `mode` / `flagged` / `composite`). Two additive,
+behavior-preserving exceptions: `SessionScore` is **extended** with always-populated
+`bootstrap_composite` / `bootstrap_flagged` (so the acute path has its input in percentile mode
+too — §5), and the scorer now **always computes** the bootstrap trip via a shared helper; the
+four old fields compute identically to before (locked by `test/scoring.test.ts`).
 
 ### 7.1 `RepoFinding` (new; 0 or 1 per scan)
 
@@ -204,6 +208,10 @@ preserved exactly.
 
 No raw prose: signal-derived numbers, ratios, a severity label, and a `paths` set only. The
 interpretation is deliberately absent — cause is undiagnosed (§3).
+
+Note: this `RepoFinding` (repo-level, in the scan `--json` envelope — this slice) is distinct from
+Slice 3's `ReflectFinding` (session-end, the `/reflect` + Stop-hook path). Separate CLI surfaces and
+separate types — they share no field and do not interact.
 
 ### 7.2 `JsonOutput`
 
@@ -250,7 +258,7 @@ No new command or flag. The baseline finding surfaces through existing outputs:
 
 ## 9. Module / data-flow placement
 
-All additions are pure functions; the only new file is `src/detector/ambient.ts`. No new I/O, no new
+All additions are pure functions; the new files are `src/detector/orientation.ts` and `src/detector/ambient.ts`. No new I/O, no new
 dependencies. The orientation metric needs event-level data, so it is computed in the detector stage
 and surfaced to the ambient assessor — **not** read from `StruggleRecord` alone (which carries only
 `.signals`, not events). This corrects rev-1's inaccurate data-flow claim.
@@ -306,8 +314,10 @@ The normalized-event schema (Slice 1 spec §4) is untouched.
   populated `RepoFinding`, the human baseline block, and the `--calibrate` verdict contain no
   marker, and that every emitted value is a number or a closed-enum/literal. Egress + packaging
   tests pass unmodified (no new deps, no new I/O).
-- **Slice-1 regression:** corpus ≥80% bar and leaderboard snapshot **unchanged** (scorer/aggregator
-  untouched) — this is itself an assertion that the slice is non-corrupting.
+- **Non-corruption regression:** corpus ≥80% bar and leaderboard snapshot **unchanged**. The
+  snapshot baseline is the CURRENT one (post the worktree-aggregation slice, #4) — this slice must
+  not change it. Scorer/aggregator untouched; this is itself the assertion that the slice is
+  non-corrupting.
 
 ## 12. Open questions (slice-specific)
 

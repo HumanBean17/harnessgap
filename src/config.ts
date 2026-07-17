@@ -43,6 +43,13 @@ export const DEFAULT_CONFIG: Config = {
       oscillation: 2,
       wall_clock_per_line_ms: 300000,
     },
+    ambient: {
+      breadth_floor: 4,
+      file_depth_floor: 12,
+      struggle_rate_threshold: 0.3,
+      min_sessions: 10,
+      severity_min_sessions: 20,
+    },
   },
   areas: {
     ignore: ['node_modules', 'build', 'target', 'dist', '.git', '.next', 'vendor'],
@@ -149,6 +156,32 @@ function validateConfig(cfg: Config): void {
         `detector.signal_weights.${k} must be >= 0, got ${v}`,
       );
     }
+  }
+  const a = d.ambient;
+  if (a.breadth_floor < 1) {
+    throw new ConfigError(
+      `detector.ambient.breadth_floor must be >= 1, got ${a.breadth_floor}`,
+    );
+  }
+  if (a.file_depth_floor < 1) {
+    throw new ConfigError(
+      `detector.ambient.file_depth_floor must be >= 1, got ${a.file_depth_floor}`,
+    );
+  }
+  if (a.struggle_rate_threshold < 0 || a.struggle_rate_threshold > 1) {
+    throw new ConfigError(
+      `detector.ambient.struggle_rate_threshold must be in [0,1], got ${a.struggle_rate_threshold}`,
+    );
+  }
+  if (a.min_sessions < 1) {
+    throw new ConfigError(
+      `detector.ambient.min_sessions must be >= 1, got ${a.min_sessions}`,
+    );
+  }
+  if (a.severity_min_sessions < a.min_sessions) {
+    throw new ConfigError(
+      `detector.ambient.severity_min_sessions must be >= min_sessions, got ${a.severity_min_sessions}`,
+    );
   }
   const tw = cfg.areas.touch_weights;
   for (const [k, v] of Object.entries(tw)) {

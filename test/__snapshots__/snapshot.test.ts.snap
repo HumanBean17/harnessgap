@@ -2,6 +2,11 @@
 
 exports[`snapshot: human leaderboard over fixed corpus > matches the committed snapshot 1`] = `
 "harnessgap scan — repo: <REPO> · 12 sessions · mode: bootstrap
+BASELINE — elevated (acute) · severity: unrated
+  orientation 1 dirs / 1 files (floors 4 / 12) · over 11 with-edit sessions
+  zero-edit (Q&A) sessions: 8% · acute struggle rate: 58% (threshold 30%)
+  the typical session orients broadly before acting — worth investigating (cause undiagnosed)
+
 AREA                             |  FLAGGED |  MEAN SCORE | TOP SIGNALS
 src/auth                         |        1 |        47.8 | wall_clock_per_line(520s), corrections(2), oscillation(2)
 src/util                         |        1 |        29.9 | wall_clock_per_line(1127s), explore_ratio(3.3), corrections(2)

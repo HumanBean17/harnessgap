@@ -16,6 +16,51 @@ export type SignalName =
 
 export type ScoringMode = 'percentile' | 'bootstrap';
 
+// Ambient-struggle (Slice 2) foundation types. Field names are contracts pinned
+// to the §7 design spec; later tasks import these verbatim.
+
+export type Severity = 'high' | 'medium' | 'low' | 'unrated';
+
+export type BaselinePath = 'orientation' | 'acute';
+
+export type BaselineState =
+  | 'elevated'
+  | 'within-norms'
+  | 'too-few-sessions'
+  | 'orientation-undefined';
+
+export interface BaselineAssessment {
+  state: BaselineState;
+  sessions_sampled: number;
+  scoring_mode: ScoringMode;
+  orientation: {
+    median_dir_breadth: number;
+    median_file_depth: number;
+    breadth_floor: number;
+    file_depth_floor: number;
+    with_edit_sessions: number;
+  } | null;
+  zero_edit_fraction: number;
+  acute: { struggle_rate: number; struggle_rate_threshold: number };
+}
+
+export interface RepoFinding {
+  kind: 'elevated-baseline';
+  severity: Severity;
+  paths: BaselinePath[];
+  sessions_sampled: number;
+  scoring_mode: ScoringMode;
+  orientation: {
+    median_dir_breadth: number;
+    median_file_depth: number;
+    breadth_floor: number;
+    file_depth_floor: number;
+    with_edit_sessions: number;
+  } | null;
+  zero_edit_fraction: number;
+  acute: { struggle_rate: number; struggle_rate_threshold: number };
+}
+
 export interface InputDigest {
   files: string[];
   cmd: string | null;
@@ -101,6 +146,7 @@ export interface JsonOutput {
   warnings: Warnings;
   sessions: StruggleRecord[];
   areas: AreaRow[];
+  repo_findings: RepoFinding[];
 }
 
 export interface Config {
@@ -120,6 +166,13 @@ export interface Config {
       abandonment: boolean;
       oscillation: number;
       wall_clock_per_line_ms: number;
+    };
+    ambient: {
+      breadth_floor: number;
+      file_depth_floor: number;
+      struggle_rate_threshold: number;
+      min_sessions: number;
+      severity_min_sessions: number;
     };
   };
   areas: {

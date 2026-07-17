@@ -124,6 +124,12 @@ detector:
     abandonment: true
     oscillation: 2
     wall_clock_per_line_ms: 300000
+  ambient:                         # repo-level elevated-baseline assessment (always printed)
+    breadth_floor: 4               # orientation path fires when median pre-edit dir-breadth >= this
+    file_depth_floor: 12           # ...or when median pre-edit file-depth >= this
+    struggle_rate_threshold: 0.30  # acute path fires when bootstrap struggle rate >= this
+    min_sessions: 10               # below this session count, baseline is "too few sessions"
+    severity_min_sessions: 20      # below this, an elevated finding is severity "unrated"
 
 areas:
   ignore: [node_modules, build, target, dist, .git, .next, vendor]  # path prefixes excluded from area clustering
@@ -149,6 +155,8 @@ A column-aligned table:
 
 ```
 harnessgap scan — repo: /home/me/myapp · 142 sessions · mode: percentile
+BASELINE — within norms · orientation 2 dirs / 6 files · zero-edit 36% · acute 4%
+
 AREA                                | FLAGGED | MEAN SCORE | TOP SIGNALS
 src/billing                         |       7 |       82.4 | failure_streak, reread
 src/auth                            |       5 |       74.1 | oscillation, corrections
@@ -222,7 +230,8 @@ A single JSON object on stdout, `schema_version: 1`:
       ]
     }
     // ...
-  ]
+  ],
+  "repo_findings": []              // non-empty only when baseline state is "elevated"; carries one elevated-baseline finding (derived metrics only)
 }
 ```
 
@@ -247,13 +256,14 @@ corrections           |          0 |          0 |          1 |          5 |     
 abandonment           |          0 |          0 |          1 |          1 |          1
 oscillation           |          0 |          0 |          1 |          4 |          2
 wall_clock_per_line   |      12000 |     180000 |     640000 |    3200000 |     300000
+BASELINE — within norms · orientation 2 dirs / 6 files · zero-edit 36% · acute struggle rate 4% (threshold 30%)
 ```
 
 - **MIN / P50 / P90 / MAX** — distribution of each signal across sessions (R-7 linear interpolation).
 - **THRESHOLD** (`active_threshold`) — the value a signal is currently judged against: in bootstrap mode, the configured `bootstrap_thresholds` value; in percentile mode, the `flag_pct`-percentile of that signal across sessions.
 - `abandonment` is boolean; its row is uniformly 0/1.
 
-The JSON form of `--calibrate` is `{mode, session_count, flag_pct, signals: {<name>: {min, p50, p90, max, active_threshold}}}`. No per-session values.
+The JSON form of `--calibrate` is `{mode, session_count, flag_pct, signals: {<name>: {min, p50, p90, max, active_threshold}}, baseline}`. No per-session values.
 
 ---
 

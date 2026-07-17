@@ -32,7 +32,7 @@ reuses the adapter and detector verbatim and only adds persistence.
 
 | File | Responsibility | Key exports |
 | --- | --- | --- |
-| `src/types.ts` | Shared type catalog. Field names/shapes are contracts pinned to the spec. | `NormalizedEvent`, `NormalizedEnvelope`, `SignalValues`, `StruggleRecord`, `AreaRow`, `JsonOutput`, `Config`, `Warnings`, `SignalName`, `ScoringMode`, `ToolKind`, `EventKind`, `ReflectFinding`, `StopHookOutput`, `ReflectFrame` |
+| `src/types.ts` | Shared type catalog. Field names/shapes are contracts pinned to the spec. | `NormalizedEvent`, `NormalizedEnvelope`, `SignalValues`, `StruggleRecord`, `AreaRow`, `JsonOutput`, `Config`, `Warnings`, `SignalName`, `ScoringMode`, `Severity`, `BaselinePath`, `BaselineState`, `BaselineAssessment`, `RepoFinding`, `ToolKind`, `EventKind`, `ReflectFinding`, `StopHookOutput`, `ReflectFrame` |
 | `src/config.ts` | Load + validate `.harnessgap.yml`; deep-merge over defaults; parse `--since` durations. | `loadConfig`, `parseDuration`, `DEFAULT_CONFIG`, `ConfigError` |
 | `src/git.ts` | Stat-based MAIN-repo resolver. Walks up from a cwd to the nearest directory `.git` (the main repo; worktrees only hold a `.git` file). No git invocation, no shell. Memoized by cwd. | `resolveMainRepo`, `walkToMainRepo` |
 | `src/walk.ts` | Discover `.jsonl` transcripts under `<claudeDir>/projects/*/*.jsonl`. Rejects symlinks. | `discoverTranscripts`, `defaultClaudeDir` |
@@ -49,7 +49,9 @@ reuses the adapter and detector verbatim and only adds persistence.
 | `src/detector/scoring.ts` | Pure scorer: percentile-of-composites and bootstrap modes. | `scoreSessions` |
 | `src/detector/areas.ts` | Pure area localization: path-prefix clustering, deepest-pruning. | `localizeAreas` |
 | `src/detector/record.ts` | Pure projection: assembles a `StruggleRecord` from envelope + signals + score + areas. | `assembleStruggleRecord` |
-| `src/detector/index.ts` | Detector orchestration: signals → score (once, whole batch) → areas → record. | `runDetector` |
+| `src/detector/orientation.ts` | Pure pre-edit orientation metric: distinct depth-2 dir prefixes + distinct read files before the first edit. `null` for zero-edit sessions. | `computePreEditOrientation` |
+| `src/detector/ambient.ts` | Pure ambient baseline assessor: combines orientation + acute struggle-rate paths into a `RepoFinding` (null unless elevated) + always-populated `BaselineAssessment`. | `assessAmbient` |
+| `src/detector/index.ts` | Detector orchestration: signals → score (once, whole batch) → ambient baseline → areas → record. Returns `{records, finding, baseline}`. | `runDetector` |
 | `src/aggregate/leaderboard.ts` | Pure aggregation: per-session records → per-area `AreaRow`s + summary. | `aggregateAreas` |
 | `src/output/json.ts` | Pure `JsonOutput` envelope assembler for `--json`. | `buildJsonEnvelope` |
 | `src/output/human.ts` | Pure human-readable leaderboard formatter (the default table). | `formatHuman` |
@@ -90,8 +92,10 @@ reuses the adapter and detector verbatim and only adds persistence.
    project), then `--since` (`started_at >= now − duration`), then `--limit`
    (applied last, after all filtering).
 7. **Detector** — `runDetector(filtered, cfg, forceBootstrap)` computes signals
-   per envelope, scores the whole batch once, localizes areas, assembles
-   `StruggleRecord[]`.
+   per envelope, scores the whole batch once, assesses the ambient baseline
+   once over the batch, localizes areas, and returns
+   `{records, finding, baseline}` (`finding` is the elevated-baseline
+   `RepoFinding` or null; `baseline` is always populated).
 8. **Aggregate** — `aggregateAreas(records, cfg)` rolls per-session records
    into per-area `AreaRow[]` + a summary.
 9. **Output** — branch by `--calibrate` / `--json` / human. `mode` is read from

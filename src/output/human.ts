@@ -3,7 +3,13 @@
 // area keys, counts, scores, and signal display strings appear in the output.
 
 import * as os from 'node:os';
-import type { AreaRow, ScoringMode, Warnings } from '../types.js';
+import type {
+  AreaRow,
+  BaselineAssessment,
+  RepoFinding,
+  ScoringMode,
+  Warnings,
+} from '../types.js';
 
 /** Inputs to `formatHuman`. */
 interface HumanInput {
@@ -13,6 +19,10 @@ interface HumanInput {
   areas: AreaRow[];
   summary: { flagged: number; unflagged: number; unlocalized: number };
   warnings: Warnings;
+  /** Always-populated ambient baseline (Slice 2). */
+  baseline: BaselineAssessment;
+  /** Ambient repo-level finding — non-null only when `baseline.state === 'elevated'`. */
+  finding: RepoFinding | null;
 }
 
 // Fixed column widths for the leaderboard table.
@@ -34,18 +44,30 @@ const WARNING_PARTS: ReadonlyArray<{ key: keyof Warnings; label: string }> = [
 /**
  * Format the scan leaderboard as a human-readable string. Pure.
  *
- * Layout: header line, column-aligned table (or a "no flagged areas" line when
- * empty), summary line, and a warnings line (only non-zero categories). The
- * bootstrap count in the summary line is `sessionCount` when mode is bootstrap,
- * else 0.
+ * Layout: header line, BASELINE section (always printed — one line, plus a
+ * 3-line detail block when `baseline.state === 'elevated'`), blank line,
+ * column-aligned table (or a "no flagged areas" line when empty), summary
+ * line, and a warnings line (only non-zero categories). The bootstrap count in
+ * the summary line is `sessionCount` when mode is bootstrap, else 0.
+ *
+ * The BASELINE line/block is FIXED LITERALS ONLY — state/severity enums,
+ * numeric medians/floors/rates, and the fixed "cause undiagnosed"
+ * interpretation string. No session content, no file paths.
  */
 export function formatHuman(input: HumanInput): string {
-  const { repo, mode, sessionCount, areas, summary, warnings } = input;
+  const { repo, mode, sessionCount, areas, summary, warnings, baseline, finding } = input;
   const lines: string[] = [];
 
   lines.push(
     `harnessgap scan — repo: ${tilde(repo)} · ${sessionCount} sessions · mode: ${mode}`,
   );
+
+  // BASELINE section (always printed) — between header and area table.
+  for (const line of baselineLines(baseline, finding)) {
+    lines.push(line);
+  }
+  // Blank line separates the baseline section from the area table.
+  lines.push('');
 
   // Only FLAGGED areas get table rows (spec §8). Unflagged areas are noise;
   // the summary line reports their count. When nothing is flagged, print a
@@ -69,6 +91,60 @@ export function formatHuman(input: HumanInput): string {
   if (wLine !== null) lines.push(wLine);
 
   return lines.join('\n');
+}
+
+/**
+ * Build the BASELINE section: exactly one line per state, plus a 3-line detail
+ * block when `state === 'elevated'` (the 2nd detail line is omitted when the
+ * finding's orientation block is null — the acute-only path). Fixed literals
+ * only — no session content, no file paths. Caller appends the trailing blank
+ * line that separates this section from the area table.
+ */
+function baselineLines(baseline: BaselineAssessment, finding: RepoFinding | null): string[] {
+  const out: string[] = [];
+  const pct = (x: number) => (x * 100).toFixed(0);
+
+  switch (baseline.state) {
+    case 'elevated': {
+      // Detector contract: `finding` is non-null iff state === 'elevated'.
+      const f = finding as RepoFinding;
+      out.push(`BASELINE — elevated (${f.paths.join('/')}) · severity: ${f.severity}`);
+      if (f.orientation !== null) {
+        const o = f.orientation;
+        out.push(
+          `  orientation ${o.median_dir_breadth} dirs / ${o.median_file_depth} files (floors ${o.breadth_floor} / ${o.file_depth_floor}) · over ${o.with_edit_sessions} with-edit sessions`,
+        );
+      }
+      out.push(
+        `  zero-edit (Q&A) sessions: ${pct(f.zero_edit_fraction)}% · acute struggle rate: ${pct(f.acute.struggle_rate)}% (threshold ${pct(f.acute.struggle_rate_threshold)}%)`,
+      );
+      out.push(
+        '  the typical session orients broadly before acting — worth investigating (cause undiagnosed)',
+      );
+      break;
+    }
+    case 'within-norms': {
+      const orient =
+        baseline.orientation !== null
+          ? `orientation ${baseline.orientation.median_dir_breadth} dirs / ${baseline.orientation.median_file_depth} files`
+          : 'orientation n/a';
+      out.push(
+        `BASELINE — within norms · ${orient} · zero-edit ${pct(baseline.zero_edit_fraction)}% · acute ${pct(baseline.acute.struggle_rate)}%`,
+      );
+      break;
+    }
+    case 'too-few-sessions': {
+      out.push(`BASELINE — too few sessions (${baseline.sessions_sampled}) to assess`);
+      break;
+    }
+    case 'orientation-undefined': {
+      out.push(
+        `BASELINE — within norms · all sessions exploration-only; orientation metric undefined · acute ${pct(baseline.acute.struggle_rate)}%`,
+      );
+      break;
+    }
+  }
+  return out;
 }
 
 /** The column-header row, aligned to match the data rows. */

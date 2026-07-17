@@ -86,8 +86,22 @@ function envelope(
 
 describe('runDetector + assembleStruggleRecord', () => {
   it('1. 3 envelopes (heavy/clean/mid): raw signals, consistent mode, flagged matches scoreSessions', () => {
-    // Empty envelopes → [] (no throw).
-    expect(runDetector([], DEFAULT_CONFIG, false)).toEqual([]);
+    // Empty envelopes → no records, no finding, too-few-sessions baseline.
+    // n=0 trace: state='too-few-sessions' (0 < min_sessions=10); orientation
+    // null (no with-edit sessions); zero_edit_fraction 0; acute.struggle_rate
+    // 0; scoring_mode 'bootstrap' via the scores[0]?.mode ?? 'bootstrap' fallback.
+    expect(runDetector([], DEFAULT_CONFIG, false)).toEqual({
+      records: [],
+      finding: null,
+      baseline: {
+        state: 'too-few-sessions',
+        sessions_sampled: 0,
+        scoring_mode: 'bootstrap',
+        orientation: null,
+        zero_edit_fraction: 0,
+        acute: { struggle_rate: 0, struggle_rate_threshold: 0.3 },
+      },
+    });
 
     // Heavy: reread=5, failure_streak=3, corrections=2 → 3 tripped → flagged.
     const heavyEvents: NormalizedEvent[] = [];
@@ -127,7 +141,7 @@ describe('runDetector + assembleStruggleRecord', () => {
       envelope('clean', cleanEvents),
       envelope('mid', midEvents),
     ];
-    const records = runDetector(envelopes, DEFAULT_CONFIG, false);
+    const { records } = runDetector(envelopes, DEFAULT_CONFIG, false);
 
     expect(records).toHaveLength(3);
 
@@ -175,7 +189,7 @@ describe('runDetector + assembleStruggleRecord', () => {
       toolCall(iso(1000), 'read', { files: ['src/a.ts'] }),
       toolCall(iso(2000), 'list'),
     ];
-    const records = runDetector([envelope('no-edits', events)], DEFAULT_CONFIG, false);
+    const { records } = runDetector([envelope('no-edits', events)], DEFAULT_CONFIG, false);
     expect(records[0].signals.explore_ratio).toBeNull();
     expect(records[0].signals.wall_clock_per_line_ms).toBeNull();
   });
@@ -186,7 +200,7 @@ describe('runDetector + assembleStruggleRecord', () => {
       toolCall(iso(1000), 'edit', { files: ['src/b.ts'], lines_changed: 5 }),
     ];
     const env = envelope('trunc', events, { truncated: true, event_count: 500 });
-    const records = runDetector([env], DEFAULT_CONFIG, false);
+    const { records } = runDetector([env], DEFAULT_CONFIG, false);
     expect(records[0].truncated).toBe(true);
     expect(records[0].event_count).toBe(500);
     // event_count can differ from events.length (truncated session).
@@ -201,7 +215,7 @@ describe('runDetector + assembleStruggleRecord', () => {
     const unlocalized = [
       toolCall(iso(0), 'edit', { files: ['README.md'], lines_changed: 5 }),
     ];
-    const records = runDetector(
+    const { records } = runDetector(
       [envelope('loc', localized), envelope('unloc', unlocalized)],
       DEFAULT_CONFIG,
       false,
@@ -217,7 +231,7 @@ describe('runDetector + assembleStruggleRecord', () => {
         toolCall(iso(0), 'edit', { files: [`src/f${i}.ts`], lines_changed: 1 }),
       ]),
     );
-    const threeRecords = runDetector(three, DEFAULT_CONFIG, false);
+    const { records: threeRecords } = runDetector(three, DEFAULT_CONFIG, false);
     expect(threeRecords[0].mode).toBe('bootstrap');
     expect(new Set(threeRecords.map((r) => r.mode)).size).toBe(1);
 
@@ -227,13 +241,13 @@ describe('runDetector + assembleStruggleRecord', () => {
         toolCall(iso(0), 'edit', { files: [`src/p${i}.ts`], lines_changed: 1 }),
       ]),
     );
-    const thirtyRecords = runDetector(thirty, DEFAULT_CONFIG, false);
+    const { records: thirtyRecords } = runDetector(thirty, DEFAULT_CONFIG, false);
     expect(thirtyRecords).toHaveLength(30);
     expect(thirtyRecords[0].mode).toBe('percentile');
     expect(new Set(thirtyRecords.map((r) => r.mode)).size).toBe(1);
 
     // forceBootstrap=true overrides even with 30 envelopes.
-    const forced = runDetector(thirty, DEFAULT_CONFIG, true);
+    const { records: forced } = runDetector(thirty, DEFAULT_CONFIG, true);
     expect(forced[0].mode).toBe('bootstrap');
   });
 });
