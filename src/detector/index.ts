@@ -20,6 +20,7 @@ import { assembleStruggleRecord } from './record.js';
 import { computePreEditOrientation } from './orientation.js';
 import { assessAmbient } from './ambient.js';
 import type { AmbientSession } from './ambient.js';
+import { computeEvidence } from '../diagnoser/evidence.js';
 
 /**
  * Run the full detector pipeline over a batch of envelopes.
@@ -45,7 +46,9 @@ export function runDetector(
   envelopes: NormalizedEnvelope[],
   cfg: Config,
   forceBootstrap: boolean,
+  opts?: { collectEvidence?: boolean },
 ): { records: StruggleRecord[]; finding: RepoFinding | null; baseline: BaselineAssessment } {
+  const collectEvidence = opts?.collectEvidence === true;
   const signals = envelopes.map((e) => computeSignals(e.events, cfg));
   const scores = scoreSessions({ signals, cfg, forceBootstrap });
 
@@ -71,7 +74,14 @@ export function runDetector(
 
   const records = envelopes.map((env, i) => {
     const areas = localizeAreas(env.events, cfg);
-    return assembleStruggleRecord(env, signals[i]!, scores[i]!, areas);
+    // Evidence is computed and threaded through ONLY when explicitly opted in.
+    // Default path (no opts / collectEvidence:false) skips the call entirely
+    // so `StruggleRecord.evidence` is absent — keeps scan/reflect output
+    // byte-identical when --diagnose is off.
+    const evidence = collectEvidence
+      ? computeEvidence(env.events, cfg.areas.test_cmd_patterns)
+      : undefined;
+    return assembleStruggleRecord(env, signals[i]!, scores[i]!, areas, evidence);
   });
 
   return { records, finding, baseline };
