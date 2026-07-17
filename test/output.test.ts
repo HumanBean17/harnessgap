@@ -149,6 +149,7 @@ describe('output formatters', () => {
       warnings,
       sessions,
       areas,
+      repo_findings: [],
     });
 
     expect(out.schema_version).toBe(1);
@@ -157,6 +158,7 @@ describe('output formatters', () => {
     expect(out.session_count).toBe(2);
     expect(out.sessions).toBe(sessions);
     expect(out.areas).toBe(areas);
+    expect(out.repo_findings).toEqual([]);
     // warnings are integer counts (pass-through, no floats introduced)
     expect(out.warnings).toEqual(warnings);
     for (const v of Object.values(out.warnings)) {

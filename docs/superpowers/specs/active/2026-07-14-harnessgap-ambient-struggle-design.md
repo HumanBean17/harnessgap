@@ -176,11 +176,15 @@ unharnessed ≈ 15–40 files / many dirs). Final values are fixed by the gate, 
 to the fixed values before merge. Sensitivity is documented: moving any floor by ±20% must not flip
 the dogfood repos across the fire/no-fire line.
 
-## 7. Contracts (minimal, additive — `StruggleRecord`/`flagged`/scorer untouched)
+## 7. Contracts (minimal, additive — `StruggleRecord`/`flagged`/scoring semantics untouched)
 
-Dropping the overlay (§2) means **no change** to `StruggleRecord`, `flagged`, `SessionScore`, the
-scorer, or the area aggregator. Slice 1's `mean_score` / `top_signals` / sort semantics are
-preserved exactly.
+Dropping the overlay (§2) means **no change** to `StruggleRecord`, `flagged`, the area
+aggregator, or Slice 1's scoring semantics (`mean_score` / `top_signals` / sort, and the four
+existing `SessionScore` fields `score_pct` / `mode` / `flagged` / `composite`). Two additive,
+behavior-preserving exceptions: `SessionScore` is **extended** with always-populated
+`bootstrap_composite` / `bootstrap_flagged` (so the acute path has its input in percentile mode
+too — §5), and the scorer now **always computes** the bootstrap trip via a shared helper; the
+four old fields compute identically to before (locked by `test/scoring.test.ts`).
 
 ### 7.1 `RepoFinding` (new; 0 or 1 per scan)
 

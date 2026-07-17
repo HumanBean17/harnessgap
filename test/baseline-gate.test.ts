@@ -67,9 +67,9 @@ describe('baseline gate (1): unharnessed repo FIRES', () => {
     // n=20 ≥ severity_min_sessions=20 → not 'unrated'. orientationRatio =
     // max(6/4, 6/12) = 1.5 ≥ 1.5 → 'high'.
     expect(
-      ['high', 'medium'],
-      `severity must escape 'unrated' (n=20); got ${finding.severity}`,
-    ).toContain(finding.severity);
+      finding.severity,
+      `severity must be 'high' at ratio 1.5; got ${finding.severity}`,
+    ).toBe('high');
 
     // Orientation path is what fires (median dirBreadth=6 ≥ breadth_floor=4).
     expect(

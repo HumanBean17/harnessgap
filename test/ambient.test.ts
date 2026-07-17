@@ -218,4 +218,25 @@ describe('assessAmbient', () => {
     expect(finding).not.toBeNull();
     expect(finding!.severity).toBe('low');
   });
+
+  it('acute path fires alone when all sessions are zero-edit + acute-hot (spec §10)', () => {
+    // All zero-edit (orientation null) + all bootstrap-flagged → the acute path
+    // is evaluated alone; the orientation path is cold (no with-edit sessions).
+    const sessions = buildSessions(20, {
+      orientation: null,
+      bootstrap_flagged: true,
+    });
+    const { finding, baseline } = assessAmbient({
+      sessions,
+      cfg: cfg(),
+      scoringMode: 'bootstrap',
+    });
+
+    expect(baseline.state).toBe('elevated');
+    expect(finding).not.toBeNull();
+    expect(finding!.paths).toEqual(['acute']);
+    expect(finding!.severity).toBe('high'); // struggle_rate 1.0 ≥ 0.60
+    expect(finding!.orientation).toBeNull();
+    expect(finding!.zero_edit_fraction).toBe(1);
+  });
 });
