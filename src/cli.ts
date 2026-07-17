@@ -30,6 +30,7 @@ interface ScanOpts {
   json?: boolean;
   calibrate?: boolean;
   bootstrap?: boolean;
+  diagnose?: boolean;
   config?: string;
   claudeDir?: string;
 }
@@ -66,6 +67,10 @@ program
   .option('--json', 'emit the JSON envelope instead of a human table')
   .option('--calibrate', 'emit the calibrate signal view')
   .option('--bootstrap', 'force bootstrap scoring mode')
+  .option(
+    '--diagnose',
+    'Classify each flagged area into a typed cause (doc/config-doc/test-gap/refactor-flag/inherent-complexity). Reads docs/ for grounding.',
+  )
   .option('--config <path>', 'path to a .harnessgap.yml config file')
   .option('--claude-dir <path>', 'Claude Code config directory (contains projects/)')
   .action(async (opts: ScanOpts) => {
@@ -76,6 +81,7 @@ program
       json: opts.json,
       calibrate: opts.calibrate,
       bootstrap: opts.bootstrap,
+      diagnose: opts.diagnose,
       configPath: opts.config,
       claudeDir: opts.claudeDir,
     };

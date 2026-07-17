@@ -228,4 +228,57 @@ describe('harnessgap CLI (spawn-based)', () => {
     expect(stdout).toContain('Usage:');
     expect(stdout).toContain('scan');
   });
+
+  // Slice 4 (Diagnoser) — Task 10: --diagnose flag parsing + threading.
+  // NOTE: the JSON envelope does NOT yet carry `diagnoses` until Task 11
+  // wires JsonOutput.diagnoses into buildJsonEnvelope. So here we assert
+  // only what Task 10 owns: the flag is accepted, parsed, and threaded into
+  // runScan (exit 0, no unknown-option error), and byte-identical default
+  // (no --diagnose ⇒ JSON has no `diagnoses` key). Surfacing `diagnoses`
+  // in --json is Task 11's responsibility.
+
+  it('7. scan --diagnose --json over corpus → exits 0, flag accepted', async () => {
+    const { repo, claudeDir } = setupFixture();
+    const { stdout, stderr, code } = await runCli([
+      'scan',
+      '--repo',
+      repo,
+      '--claude-dir',
+      claudeDir,
+      '--diagnose',
+      '--json',
+    ]);
+
+    expect(code).toBe(0);
+    expect(stderr).toBe('');
+    // JSON envelope is still valid; `diagnoses` key may or may not be present
+    // yet (Task 11 wires it). We only assert the flag parses + runScan runs.
+    const parsed = JSON.parse(stdout) as JsonOutput;
+    expect(parsed.schema_version).toBe(1);
+    expect(parsed.session_count).toBe(2);
+  });
+
+  it('8. scan --json (no --diagnose) → JSON has no `diagnoses` key (byte-identical default)', async () => {
+    const { repo, claudeDir } = setupFixture();
+    const { stdout, code } = await runCli([
+      'scan',
+      '--repo',
+      repo,
+      '--claude-dir',
+      claudeDir,
+      '--json',
+    ]);
+
+    expect(code).toBe(0);
+    const parsed = JSON.parse(stdout) as JsonOutput;
+    expect(parsed).not.toHaveProperty('diagnoses');
+  });
+
+  it('9. scan --help → lists --diagnose with its description', async () => {
+    const { stdout, code } = await runCli(['scan', '--help']);
+
+    expect(code).toBe(0);
+    expect(stdout).toContain('--diagnose');
+    expect(stdout).toContain('Classify each flagged area into a typed cause');
+  });
 });
