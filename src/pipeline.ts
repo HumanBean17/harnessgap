@@ -243,6 +243,9 @@ export async function runScan(opts: ScanOptions): Promise<ScanResult> {
         sessions: records,
         areas: rows,
         repo_findings: finding ? [finding] : [],
+        // Spread only when defined so the default `--json` envelope has NO
+        // `diagnoses` key at all (byte-identical to Slice 3).
+        ...(diagnoses !== undefined ? { diagnoses } : {}),
       }),
     );
   } else {
@@ -255,6 +258,9 @@ export async function runScan(opts: ScanOptions): Promise<ScanResult> {
       warnings,
       baseline,
       finding,
+      // Spread only when defined so the default human table has no CAUSE
+      // column (byte-identical to Slice 3).
+      ...(diagnoses !== undefined ? { diagnoses } : {}),
     });
   }
 

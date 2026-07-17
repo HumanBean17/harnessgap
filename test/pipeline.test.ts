@@ -306,9 +306,9 @@ describe('runScan (pipeline orchestration)', () => {
     expect(withoutOpt.sessionCount).toBe(withFalse.sessionCount);
     expect(withoutOpt.warnings).toEqual(withFalse.warnings);
 
-    // Also assert the corpus default-path output is unchanged by the wiring:
-    // turning --diagnose on must not change the human output (diagnoses only
-    // surface on `result.diagnoses`, NOT in the human/json/calibrate string).
+    // Also assert the corpus default-path output is byte-identical to Slice 3
+    // (the cause column exists ONLY under `--diagnose`). The default output
+    // has NO CAUSE column; turning `--diagnose` on surfaces a CAUSE column.
     const corpusRepo = setupTempRepo();
     for (const spec of corpusSessions) {
       writeTranscript(corpusRepo.claudeDir, corpusSlug, spec.name, mkSession(corpusRepo.repo, spec));
@@ -319,7 +319,12 @@ describe('runScan (pipeline orchestration)', () => {
       claudeDir: corpusRepo.claudeDir,
       diagnose: true,
     });
-    expect(corpusOn.output).toBe(corpusOff.output);
+    // Default path: NO CAUSE column (byte-identical to Slice 3).
+    expect(corpusOff.output).not.toContain('CAUSE');
+    // --diagnose on (with flagged areas in the corpus): CAUSE column present.
+    expect(corpusOn.output).toContain('CAUSE');
+    // The two outputs differ — the cause column is the opt-in surface.
+    expect(corpusOn.output).not.toBe(corpusOff.output);
   });
 
   it('10. records carry .evidence ONLY when diagnose is true (verified via --json sessions)', async () => {

@@ -9,6 +9,7 @@ import { DEFAULT_CONFIG } from '../src/config.js';
 import type {
   AreaRow,
   BaselineAssessment,
+  Diagnosis,
   RepoFinding,
   SignalName,
   SignalValues,
@@ -851,5 +852,255 @@ describe('output formatters', () => {
     // Acute numbers still render.
     expect(table).toContain('zero-edit 10%');
     expect(table).toContain('(threshold 30%)');
+  });
+
+  // --- Task 11: cause column (human) + diagnoses field (JSON) — opt-in ---
+
+  /** Build a Diagnosis with defaults; overrides applied on top. */
+  function mkDiagnosis(overrides: Partial<Diagnosis> = {}): Diagnosis {
+    return {
+      unit: { kind: 'area', key: 'src/billing' },
+      cause: 'doc',
+      confidence: 0.78,
+      rationale: 'doc path absent + reread signal',
+      evidence_refs: [{ kind: 'doc_absent', checked: ['docs/billing.md'] }],
+      ...overrides,
+    };
+  }
+
+  it('19. formatHuman — diagnoses present renders a CAUSE column with cause(confidence) per flagged row', () => {
+    const areas: AreaRow[] = [
+      {
+        key: 'src/billing',
+        sessions_total: 3,
+        sessions_flagged: 2,
+        mean_score: 85,
+        top_signals: [{ name: 'reread', value: 7, display: 'reread(7)' }],
+      },
+    ];
+    const out = formatHuman({
+      repo: 'r',
+      mode: 'bootstrap',
+      sessionCount: 5,
+      areas,
+      summary: { flagged: 1, unflagged: 0, unlocalized: 0 },
+      warnings: {
+        malformed_lines: 0,
+        oversized_lines: 0,
+        skipped_sessions: 0,
+        truncated_sessions: 0,
+        symlinks_rejected: 0,
+        unresolvable_cwd: 0,
+      },
+      baseline: mkBaseline(),
+      finding: null,
+      diagnoses: [mkDiagnosis()],
+    });
+
+    // The CAUSE column header appears.
+    expect(out).toContain('CAUSE');
+    // The src/billing row carries `doc(0.78)` as its cause cell.
+    expect(out).toContain('doc(0.78)');
+  });
+
+  it('20. formatHuman — flagged row with no matching diagnosis renders `-` in the cause cell', () => {
+    const areas: AreaRow[] = [
+      {
+        key: 'src/billing',
+        sessions_total: 3,
+        sessions_flagged: 2,
+        mean_score: 85,
+        top_signals: [{ name: 'reread', value: 7, display: 'reread(7)' }],
+      },
+      {
+        key: 'src/auth',
+        sessions_total: 2,
+        sessions_flagged: 1,
+        mean_score: 70,
+        top_signals: [{ name: 'abandonment', value: true, display: 'abandonment(yes)' }],
+      },
+    ];
+    // Only src/billing has a diagnosis; src/auth should render `-`.
+    const out = formatHuman({
+      repo: 'r',
+      mode: 'bootstrap',
+      sessionCount: 5,
+      areas,
+      summary: { flagged: 2, unflagged: 0, unlocalized: 0 },
+      warnings: {
+        malformed_lines: 0,
+        oversized_lines: 0,
+        skipped_sessions: 0,
+        truncated_sessions: 0,
+        symlinks_rejected: 0,
+        unresolvable_cwd: 0,
+      },
+      baseline: mkBaseline(),
+      finding: null,
+      diagnoses: [mkDiagnosis()],
+    });
+
+    const lines = out.split('\n');
+    // Find the src/auth row and confirm its cause cell is `-`.
+    const authLine = lines.find((l) => l.startsWith('src/auth'));
+    expect(authLine).toBeDefined();
+    // The cause column appears after the TOP SIGNALS content separator on that row.
+    // Use a regex that anchors to the row: columns are AREA | FLAGGED | MEAN SCORE | CAUSE | TOP SIGNALS.
+    // The `doc` diagnosis must NOT bleed into the unmatched row.
+    expect(authLine!).not.toContain('doc(');
+    // The src/auth row's cause cell is `-`.
+    const billingLine = lines.find((l) => l.startsWith('src/billing'));
+    expect(billingLine).toBeDefined();
+    expect(billingLine!).toContain('doc(0.78)');
+    // Verify auth row has a standalone `-` cause cell: split on ` | ` and inspect the cell.
+    // Column order: [AREA, FLAGGED, MEAN SCORE, CAUSE, TOP SIGNALS] (5 cols → 4 separators).
+    const authCells = authLine!.split(' | ');
+    expect(authCells.length).toBe(5);
+    expect(authCells[3]!.trim()).toBe('-');
+  });
+
+  it('21. formatHuman — `unclassified` cause renders as `-` in the cause cell', () => {
+    const areas: AreaRow[] = [
+      {
+        key: 'src/legacy',
+        sessions_total: 2,
+        sessions_flagged: 1,
+        mean_score: 60,
+        top_signals: [{ name: 'reread', value: 4, display: 'reread(4)' }],
+      },
+    ];
+    const out = formatHuman({
+      repo: 'r',
+      mode: 'bootstrap',
+      sessionCount: 3,
+      areas,
+      summary: { flagged: 1, unflagged: 0, unlocalized: 0 },
+      warnings: {
+        malformed_lines: 0,
+        oversized_lines: 0,
+        skipped_sessions: 0,
+        truncated_sessions: 0,
+        symlinks_rejected: 0,
+        unresolvable_cwd: 0,
+      },
+      baseline: mkBaseline(),
+      finding: null,
+      diagnoses: [
+        mkDiagnosis({ unit: { kind: 'area', key: 'src/legacy' }, cause: 'unclassified', confidence: 0.3 }),
+      ],
+    });
+
+    const lines = out.split('\n');
+    const legacyLine = lines.find((l) => l.startsWith('src/legacy'));
+    expect(legacyLine).toBeDefined();
+    const cells = legacyLine!.split(' | ');
+    expect(cells[3]!.trim()).toBe('-');
+  });
+
+  it('22. formatHuman — NO diagnoses passed → byte-identical default (no CAUSE column at all)', () => {
+    const areas: AreaRow[] = [
+      {
+        key: 'src/billing',
+        sessions_total: 3,
+        sessions_flagged: 2,
+        mean_score: 85,
+        top_signals: [{ name: 'reread', value: 7, display: 'reread(7)' }],
+      },
+    ];
+    const warnings: Warnings = {
+      malformed_lines: 1,
+      oversized_lines: 0,
+      skipped_sessions: 0,
+      truncated_sessions: 0,
+      symlinks_rejected: 0,
+      unresolvable_cwd: 0,
+    };
+    const commonInput = {
+      repo: 'r',
+      mode: 'bootstrap',
+      sessionCount: 5,
+      areas,
+      summary: { flagged: 1, unflagged: 0, unlocalized: 0 },
+      warnings,
+      baseline: mkBaseline(),
+      finding: null,
+    };
+
+    // Three ways the default path can call formatHuman: omit `diagnoses`,
+    // pass `undefined`, or pass an empty array (still treat as "off" per spec:
+    // the column exists only when diagnoses are present). All three MUST be
+    // byte-identical to the pre-change Slice 3 output.
+    const omitted = formatHuman(commonInput);
+    const passedUndefined = formatHuman({ ...commonInput, diagnoses: undefined });
+
+    // No CAUSE column header, no cause cell content.
+    expect(omitted).not.toContain('CAUSE');
+    expect(omitted).not.toContain('doc(');
+    // Both invocation styles produce identical output.
+    expect(passedUndefined).toBe(omitted);
+
+    // Column header is the Slice 3 layout (4 columns: AREA, FLAGGED, MEAN SCORE, TOP SIGNALS).
+    const headerLine = omitted.split('\n').find((l) => l.startsWith('AREA'));
+    expect(headerLine).toBeDefined();
+    expect(headerLine!.split(' | ').length).toBe(4);
+    // Row layout matches header (4 cells per row).
+    const billingLine = omitted.split('\n').find((l) => l.startsWith('src/billing'));
+    expect(billingLine).toBeDefined();
+    expect(billingLine!.split(' | ').length).toBe(4);
+  });
+
+  it('23. buildJsonEnvelope — diagnoses passed → projected onto envelope with cause field', () => {
+    const warnings: Warnings = {
+      malformed_lines: 0,
+      oversized_lines: 0,
+      skipped_sessions: 0,
+      truncated_sessions: 0,
+      symlinks_rejected: 0,
+      unresolvable_cwd: 0,
+    };
+    const diagnosis: Diagnosis = mkDiagnosis();
+
+    const out = buildJsonEnvelope({
+      repo: 'r',
+      mode: 'bootstrap',
+      session_count: 2,
+      warnings,
+      sessions: [mkRecord()],
+      areas: [],
+      repo_findings: [],
+      diagnoses: [diagnosis],
+    });
+
+    expect(out.diagnoses).toBeDefined();
+    expect(out.diagnoses).toHaveLength(1);
+    expect(out.diagnoses![0]!.cause).toBe('doc');
+    expect(out.diagnoses![0]!.unit).toEqual({ kind: 'area', key: 'src/billing' });
+    expect(out.diagnoses![0]!.confidence).toBeCloseTo(0.78, 2);
+  });
+
+  it('24. buildJsonEnvelope — NO diagnoses passed → envelope has NO diagnoses key (byte-identical default)', () => {
+    const warnings: Warnings = {
+      malformed_lines: 0,
+      oversized_lines: 0,
+      skipped_sessions: 0,
+      truncated_sessions: 0,
+      symlinks_rejected: 0,
+      unresolvable_cwd: 0,
+    };
+
+    const out = buildJsonEnvelope({
+      repo: 'r',
+      mode: 'bootstrap',
+      session_count: 1,
+      warnings,
+      sessions: [mkRecord()],
+      areas: [],
+      repo_findings: [],
+    });
+
+    // Key is ABSENT (not just undefined). The serialized JSON must not contain
+    // the `diagnoses` key at all.
+    expect(out).not.toHaveProperty('diagnoses');
+    expect(JSON.stringify(out)).not.toContain('diagnoses');
   });
 });
