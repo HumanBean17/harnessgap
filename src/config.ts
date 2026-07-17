@@ -201,6 +201,22 @@ function validateConfig(cfg: Config): void {
   if (mw < 0 || mw > 1) {
     throw new ConfigError(`areas.min_weight must be in [0,1], got ${mw}`);
   }
+  // docs_dirs: must be an array of strings. The deep-merge replaces (not
+  // concatenates) arrays, so a scalar or non-string element would silently
+  // replace the default `['docs']` and surface later as a confusing internal
+  // error inside gatherRepoContext. Catch it here at the boundary.
+  if (!Array.isArray(cfg.docs_dirs)) {
+    throw new ConfigError(
+      `docs_dirs must be an array of strings, got ${typeof cfg.docs_dirs}`,
+    );
+  }
+  for (const d of cfg.docs_dirs) {
+    if (typeof d !== 'string') {
+      throw new ConfigError(
+        `docs_dirs must be an array of strings, found non-string element: ${JSON.stringify(d)}`,
+      );
+    }
+  }
   const dg = cfg.diagnose;
   if (dg.confidence_floor < 0 || dg.confidence_floor > 1) {
     throw new ConfigError(

@@ -229,15 +229,16 @@ describe('harnessgap CLI (spawn-based)', () => {
     expect(stdout).toContain('scan');
   });
 
-  // Slice 4 (Diagnoser) — Task 10: --diagnose flag parsing + threading.
-  // NOTE: the JSON envelope does NOT yet carry `diagnoses` until Task 11
-  // wires JsonOutput.diagnoses into buildJsonEnvelope. So here we assert
-  // only what Task 10 owns: the flag is accepted, parsed, and threaded into
-  // runScan (exit 0, no unknown-option error), and byte-identical default
-  // (no --diagnose ⇒ JSON has no `diagnoses` key). Surfacing `diagnoses`
-  // in --json is Task 11's responsibility.
+  // Slice 4 (Diagnoser) — Task 10 + Task 11: --diagnose flag is parsed and
+  // threaded into runScan, and the JSON envelope carries a `diagnoses` array
+  // (Task 11 wired JsonOutput.diagnoses into buildJsonEnvelope). Here we assert
+  // what's true for the corpus fixture: the flag is accepted (exit 0, no
+  // unknown-option error), the envelope is valid, and `diagnoses` is present
+  // as an array (it may be empty for this thin corpus — that's fine, so we
+  // assert defined + Array.isArray, not a specific length). Byte-identical
+  // default (no --diagnose ⇒ JSON has no `diagnoses` key) is covered by test 8.
 
-  it('7. scan --diagnose --json over corpus → exits 0, flag accepted', async () => {
+  it('7. scan --diagnose --json over corpus → exits 0, flag accepted, diagnoses array present', async () => {
     const { repo, claudeDir } = setupFixture();
     const { stdout, stderr, code } = await runCli([
       'scan',
@@ -251,11 +252,14 @@ describe('harnessgap CLI (spawn-based)', () => {
 
     expect(code).toBe(0);
     expect(stderr).toBe('');
-    // JSON envelope is still valid; `diagnoses` key may or may not be present
-    // yet (Task 11 wires it). We only assert the flag parses + runScan runs.
     const parsed = JSON.parse(stdout) as JsonOutput;
     expect(parsed.schema_version).toBe(1);
     expect(parsed.session_count).toBe(2);
+    // Task 11: the envelope carries a `diagnoses` array. The corpus is thin
+    // (≤1 session per area, scores below floor), so it may be empty — assert
+    // shape only, not length.
+    expect(parsed.diagnoses).toBeDefined();
+    expect(Array.isArray(parsed.diagnoses)).toBe(true);
   });
 
   it('8. scan --json (no --diagnose) → JSON has no `diagnoses` key (byte-identical default)', async () => {

@@ -1,14 +1,18 @@
 // Task 8: diagnoseUnits orchestration. Thin coordinator that calls
 // buildProfiles (Task 5) → gatherRepoContext (Task 6) → classify (Task 7) per
-// unit, with per-unit fail-open (a thrown classify/context step degrades that
-// unit to `unclassified`, never aborts the batch).
+// unit, with two layers of fail-open: per-unit (a thrown classify/context step
+// degrades that unit to `unclassified`, never aborts the batch) and outer
+// batch-level (a thrown buildProfiles degrades the whole batch to `[]`).
 //
 // Cases (a)-(d) + (f) drive the REAL pipeline over a real tmp repo + docs dir
 // (mirrors test/repo-context.test.ts). Case (e) verifies the bad-docsDir path
 // still yields a Diagnosis (no throw). Cases (e') and (g) flip a hoisted
 // vi.mock toggle to force `classify` to throw for one key — directly exercising
-// the orchestrator's own try/catch (mirrors the pattern in test/reflect.test.ts).
-// The mock delegates to the real classify by default, so (a)-(f) are unaffected.
+// the orchestrator's per-unit try/catch (mirrors the pattern in
+// test/reflect.test.ts). Case (h) flips a second hoisted toggle to force
+// `buildProfiles` to throw — exercising the OUTER batch-level fail-open. Both
+// mocks delegate to the real implementation by default, so (a)-(g) are
+// unaffected.
 
 import { describe, it, expect, afterEach, vi } from 'vitest';
 import * as fs from 'node:fs';
@@ -47,6 +51,25 @@ vi.mock('../src/diagnoser/classify.js', async (importOriginal) => {
   };
 });
 
+// --- hoisted fail-open toggle for case (h) ---------------------------------
+// Same shape, but for buildProfiles. When `buildProfilesThrows.on` is true the
+// wrapper throws unconditionally, exercising the OUTER batch-level try/catch
+// in diagnoseUnits (the contract that runScan relies on: never throws).
+const buildProfilesThrows = vi.hoisted(() => ({ on: false }));
+vi.mock('../src/diagnoser/profile.js', async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import('../src/diagnoser/profile.js')>();
+  return {
+    ...actual,
+    buildProfiles: (...args: Parameters<typeof actual.buildProfiles>) => {
+      if (buildProfilesThrows.on) {
+        throw new Error('forced buildProfiles failure');
+      }
+      return actual.buildProfiles(...args);
+    },
+  };
+});
+
 // Importing AFTER vi.mock so the wrapper applies inside diagnoseUnits.
 import { diagnoseUnits } from '../src/diagnoser/index.js';
 
@@ -61,8 +84,9 @@ function makeRepo(): string {
 }
 
 afterEach(() => {
-  // Reset the fail-open toggle between tests so ordering never matters.
+  // Reset the fail-open toggles between tests so ordering never matters.
   classifyThrows.onKey = null;
+  buildProfilesThrows.on = false;
   while (REPOS.length) {
     const r = REPOS.pop()!;
     try {
@@ -320,5 +344,29 @@ describe('diagnoseUnits', () => {
   it('(f) empty input → empty output', () => {
     const repo = makeRepo();
     expect(diagnoseUnits([], CFG, repo)).toEqual([]);
+  });
+
+  it("(h) outer fail-open: a thrown buildProfiles degrades the whole batch to [] (no throw, never aborts the scan)", () => {
+    // runScan calls diagnoseUnits unguarded, so the function itself must never
+    // throw — even if buildProfiles somehow regresses (it can't throw on
+    // detector-produced records, but the contract must hold unconditionally).
+    // Force buildProfiles to throw; diagnoseUnits must catch and return [].
+    const repo = makeRepo();
+    const records = [
+      mkRecord({
+        session_id: 's1',
+        areas: [{ key: 'src/billing', weight: 1 }],
+        signals: zeroSignals({ reread: 6 }),
+      }),
+    ];
+    buildProfilesThrows.on = true;
+    try {
+      const out = diagnoseUnits(records, CFG, repo);
+      // No throw — empty array fallback. The whole batch degrades to nothing
+      // rather than propagating the throw to runScan.
+      expect(out).toEqual([]);
+    } finally {
+      buildProfilesThrows.on = false;
+    }
   });
 });

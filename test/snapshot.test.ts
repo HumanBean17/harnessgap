@@ -7,8 +7,14 @@
 //   (1) DEFAULT scan — byte-identical invariant carried over from Slice 1/2/3.
 //       The original test case is preserved verbatim so its snapshot key in
 //       `snapshot.test.ts.snap` stays byte-identical (no `-u` needed there).
-//   (2) `scan --diagnose` — locks the new CAUSE column added in Slice 4. A new
-//       snapshot entry is written under a separate key alongside the original.
+//   (2) `scan --diagnose` — locks the CAUSE column LAYOUT + dash rendering
+//       added in Slice 4 (extra column header + ` - ` cells). The corpus is
+//       too thin for a real cause to fire here (each area has ≤1 session and
+//       scores below the diagnose floor → every area comes back
+//       `unclassified` → rendered as `-`), so this snapshot does NOT exercise
+//       real cause-cell values like `doc(0.78)`. Real cause-cell rendering is
+//       covered by `test/output.test.ts` (cases 19-21). A new snapshot entry
+//       is written under a separate key alongside the original.
 //
 // The temp repo path is normalized to <REPO> before snapshotting (it changes
 // per run but does not affect the leaderboard content). Everything else
@@ -42,7 +48,7 @@ describe('snapshot: human leaderboard over fixed corpus', () => {
     expect(normalized).toMatchSnapshot();
   });
 
-  it('scan --diagnose matches the committed snapshot (CAUSE column locked)', async () => {
+  it('scan --diagnose matches the committed snapshot (CAUSE column layout + dash rendering locked)', async () => {
     const { repo, claudeDir } = setupTempRepo();
     for (const spec of corpusSessions) {
       writeTranscript(claudeDir, corpusSlug, spec.name, mkSession(repo, spec));
@@ -52,7 +58,12 @@ describe('snapshot: human leaderboard over fixed corpus', () => {
 
     // Same path normalization as the default case — the temp repo path is the
     // only run-to-run variable. The CAUSE column is rendered by formatHuman
-    // when at least one Diagnosis is produced (7 flagged areas → 7 diagnoses).
+    // when the diagnoses array is non-empty. Here the corpus is too thin for
+    // any real cause to fire (≤1 session per area, scores below the diagnose
+    // floor → every flagged area is `unclassified` → rendered as `-`), so
+    // this snapshot locks the column LAYOUT and dash rendering only — NOT real
+    // cause-cell values like `doc(0.78)` (those are covered by
+    // test/output.test.ts cases 19-21).
     const normalized = result.output.replaceAll(repo, '<REPO>');
 
     expect(normalized).toMatchSnapshot();

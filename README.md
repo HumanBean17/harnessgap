@@ -5,10 +5,10 @@ produces a *struggle leaderboard* — the areas of a repo where Claude Code
 sessions show the deterministic signals of friction (rereads, failure streaks,
 oscillating edits, abandonment, etc.).
 
-This is **Slice 1**: it writes nothing, installs nothing, persists nothing. It
-only prints a leaderboard to stdout. Cause attribution is available as an
-opt-in via `scan --diagnose` (Slice 4); synthesis, routing, and measurement are
-deferred to later slices.
+The **default `scan` path is detection-only**: it writes nothing, installs
+nothing, persists nothing — it only prints a leaderboard to stdout. Cause
+attribution is available as an opt-in via `scan --diagnose` (Slice 4);
+synthesis, routing, and measurement are deferred to later slices.
 
 > **Full manual:** [docs/CONSUMER_GUIDE.md](docs/CONSUMER_GUIDE.md) — output formats, scoring modes, calibration, FAQ. **Internals:** [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
@@ -216,8 +216,9 @@ shipped and will be rejected.
 
 ## Success criterion
 
-Slice 1 is validated by a **manual dogfood gate**, not an automated test. On a
-real repo with rich Claude Code session history, the user prepares, in advance:
+The detection leaderboard is validated by a **manual dogfood gate**, not an
+automated test. On a real repo with rich Claude Code session history, the user
+prepares, in advance:
 
 - **>= 5 areas they recall as struggle**, and
 - **>= 5 areas they recall as non-struggle.**

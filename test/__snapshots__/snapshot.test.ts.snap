@@ -18,7 +18,7 @@ src/api                          |        1 |        22.4 | wall_clock_per_line(
 7 areas flagged · 3 unflagged · 0 unlocalized · bootstrap: 12 sessions"
 `;
 
-exports[`snapshot: human leaderboard over fixed corpus > scan --diagnose matches the committed snapshot (CAUSE column locked) 1`] = `
+exports[`snapshot: human leaderboard over fixed corpus > scan --diagnose matches the committed snapshot (CAUSE column layout + dash rendering locked) 1`] = `
 "harnessgap scan — repo: <REPO> · 12 sessions · mode: bootstrap
 BASELINE — elevated (acute) · severity: unrated
   orientation 1 dirs / 1 files (floors 4 / 12) · over 11 with-edit sessions

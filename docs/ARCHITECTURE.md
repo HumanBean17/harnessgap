@@ -1,4 +1,4 @@
-# harnessgap — Architecture (Slice 1, detection-only)
+# harnessgap — Architecture (detection + opt-in diagnosis)
 
 Internal reference for contributors. Covers the `harnessgap scan` pipeline as
 implemented in `src/`. For user-facing usage see [`../README.md`](../README.md);
@@ -7,12 +7,13 @@ for the design contract see the
 
 ## 1. Overview
 
-Slice 1 is a **stateless, detection-only** CLI. `harnessgap scan` reads Claude
-Code transcript logs from `~/.claude/projects/`, normalizes them into a
-versioned event schema, runs seven deterministic struggle signals, scores
-sessions as a percentile of composites (with an absolute-threshold bootstrap
-for thin history), localizes struggle to repo areas, and prints a leaderboard
-to stdout.
+The **default `scan` path is a stateless, detection-only pipeline** (Slice 1);
+the opt-in `scan --diagnose` flag (Slice 4) layers cause attribution on top.
+`harnessgap scan` reads Claude Code transcript logs from
+`~/.claude/projects/`, normalizes them into a versioned event schema, runs
+seven deterministic struggle signals, scores sessions as a percentile of
+composites (with an absolute-threshold bootstrap for thin history), localizes
+struggle to repo areas, and prints a leaderboard to stdout.
 
 The contract is **stateless + offline**:
 

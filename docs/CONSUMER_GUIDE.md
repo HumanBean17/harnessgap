@@ -5,10 +5,11 @@ produces a **struggle leaderboard** — the areas of a repo where Claude Code
 sessions show deterministic signals of friction (rereads, failure streaks,
 oscillating edits, abandonment, and more).
 
-This is Slice 1: it **writes nothing, installs nothing, persists nothing**. It
-reads transcripts under `~/.claude/projects/` and prints a leaderboard to stdout.
-Cause attribution is available as an opt-in via `scan --diagnose` (Slice 4);
-synthesis, routing, and measurement are deferred to later slices.
+The **default `scan` path is detection-only**: it **writes nothing, installs
+nothing, persists nothing** — it reads transcripts under
+`~/.claude/projects/` and prints a leaderboard to stdout. Cause attribution
+is available as an opt-in via `scan --diagnose` (Slice 4); synthesis, routing,
+and measurement are deferred to later slices.
 
 For a one-page summary see [README.md](../README.md). For internals see
 [ARCHITECTURE.md](ARCHITECTURE.md).
@@ -520,8 +521,9 @@ and `test/egress.test.ts` (no `src/` file imports a network module or calls
 
 ## Validating on your repo (the dogfood gate)
 
-Slice 1 is validated by a **manual dogfood gate**, not an automated test. On a
-real repo with rich Claude Code session history, prepare in advance:
+The detection leaderboard is validated by a **manual dogfood gate**, not an
+automated test. On a real repo with rich Claude Code session history, prepare
+in advance:
 
 - **>= 5 areas you recall as struggle**, and
 - **>= 5 areas you recall as non-struggle.**

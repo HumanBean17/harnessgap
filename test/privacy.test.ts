@@ -353,12 +353,15 @@ describe('privacy (e): diagnosis leaves carry no prose', () => {
     //     failing command" in classify.ts or "failure_profile.cmd" field).
     //   - the marker-named file in 1 read (leak vector: someone cites the
     //     edited/read path inside rationale or a new evidence leaf).
-    // explore_ratio = 30 reads / 3 edited lines = 10 (≥ 10 threshold → elevated).
+    // explore_ratio = 31 reads / 3 edited lines ≈ 10.3 (≥ 10 threshold → elevated).
+    // (30 from the 6×5 loop just below + 1 marker read appended after.)
     // reread = 6 distinct files each read ≥5 times (≥ 5 → elevated).
     // corrections = 2 (≥ 2 → elevated). No docs/ created → docExists=false.
     const readFiles = Array.from({ length: 6 }, (_, i) => `src/billing/f${i}.ts`);
     const events: EventSpec[] = [];
-    // 6 files × 5 reads = 30 reads (reread=6, explore_ratio numerator=30).
+    // 6 files × 5 reads = 30 reads; the marker read below brings the total to
+    // 31 (reread=6 — the marker file is read only once, so it isn't counted;
+    // explore_ratio numerator=31).
     for (const f of readFiles) {
       for (let i = 0; i < 5; i++) events.push({ kind: 'read', file: f });
     }

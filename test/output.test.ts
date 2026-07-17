@@ -1032,12 +1032,15 @@ describe('output formatters', () => {
     // byte-identical to the pre-change Slice 3 output.
     const omitted = formatHuman(commonInput);
     const passedUndefined = formatHuman({ ...commonInput, diagnoses: undefined });
+    const passedEmptyArray = formatHuman({ ...commonInput, diagnoses: [] });
 
     // No CAUSE column header, no cause cell content.
     expect(omitted).not.toContain('CAUSE');
     expect(omitted).not.toContain('doc(');
-    // Both invocation styles produce identical output.
+    // All three invocation styles produce identical output (the empty-array
+    // case is the --diagnose-on-but-no-flagged-areas path — still no column).
     expect(passedUndefined).toBe(omitted);
+    expect(passedEmptyArray).toBe(omitted);
 
     // Column header is the Slice 3 layout (4 columns: AREA, FLAGGED, MEAN SCORE, TOP SIGNALS).
     const headerLine = omitted.split('\n').find((l) => l.startsWith('AREA'));
@@ -1102,5 +1105,36 @@ describe('output formatters', () => {
     // the `diagnoses` key at all.
     expect(out).not.toHaveProperty('diagnoses');
     expect(JSON.stringify(out)).not.toContain('diagnoses');
+  });
+
+  it('25. buildJsonEnvelope — diagnoses: [] (defined empty) → envelope INCLUDES `diagnoses: []` key (--diagnose on, no flagged areas)', () => {
+    const warnings: Warnings = {
+      malformed_lines: 0,
+      oversized_lines: 0,
+      skipped_sessions: 0,
+      truncated_sessions: 0,
+      symlinks_rejected: 0,
+      unresolvable_cwd: 0,
+    };
+
+    const out = buildJsonEnvelope({
+      repo: 'r',
+      mode: 'bootstrap',
+      session_count: 1,
+      warnings,
+      sessions: [mkRecord()],
+      areas: [],
+      repo_findings: [],
+      diagnoses: [],
+    });
+
+    // Key IS present (defined-but-empty signals --diagnose was on; nothing to
+    // flag). The serialized JSON must carry `"diagnoses":[]` verbatim so
+    // consumers can distinguish --diagnose-on-but-empty from default-off
+    // (test 24: key absent).
+    expect(out).toHaveProperty('diagnoses');
+    expect(Array.isArray(out.diagnoses)).toBe(true);
+    expect(out.diagnoses).toHaveLength(0);
+    expect(JSON.stringify(out)).toContain('"diagnoses":[]');
   });
 });

@@ -216,17 +216,35 @@ describe('docs_dirs and diagnose config (Slice 4 Task 1)', () => {
 
   it('throws ConfigError when diagnose.config_share_floor is -0.1 (must be in [0,1])', () => {
     const path = writeTmpConfig('diagnose:\n  config_share_floor: -0.1\n');
-    expect(() => loadConfig(path)).toThrow(ConfigError);
+    try {
+      loadConfig(path);
+      throw new Error('expected loadConfig to throw');
+    } catch (e) {
+      expect(e).toBeInstanceOf(ConfigError);
+      expect((e as Error).message).toContain('diagnose.config_share_floor');
+    }
   });
 
   it('throws ConfigError when diagnose.test_share_floor is 1.5 (must be in [0,1])', () => {
     const path = writeTmpConfig('diagnose:\n  test_share_floor: 1.5\n');
-    expect(() => loadConfig(path)).toThrow(ConfigError);
+    try {
+      loadConfig(path);
+      throw new Error('expected loadConfig to throw');
+    } catch (e) {
+      expect(e).toBeInstanceOf(ConfigError);
+      expect((e as Error).message).toContain('diagnose.test_share_floor');
+    }
   });
 
   it('throws ConfigError when diagnose.code_share_floor is -0.5 (must be in [0,1])', () => {
     const path = writeTmpConfig('diagnose:\n  code_share_floor: -0.5\n');
-    expect(() => loadConfig(path)).toThrow(ConfigError);
+    try {
+      loadConfig(path);
+      throw new Error('expected loadConfig to throw');
+    } catch (e) {
+      expect(e).toBeInstanceOf(ConfigError);
+      expect((e as Error).message).toContain('diagnose.code_share_floor');
+    }
   });
 
   it('throws ConfigError when diagnose.score_floor is 200 (must be in [0,100])', () => {
@@ -238,5 +256,33 @@ describe('docs_dirs and diagnose config (Slice 4 Task 1)', () => {
       expect(e).toBeInstanceOf(ConfigError);
       expect((e as Error).message).toContain('diagnose.score_floor');
     }
+  });
+
+  it('throws ConfigError when docs_dirs is a scalar number (must be array of strings)', () => {
+    const path = writeTmpConfig('docs_dirs: 5\n');
+    try {
+      loadConfig(path);
+      throw new Error('expected loadConfig to throw');
+    } catch (e) {
+      expect(e).toBeInstanceOf(ConfigError);
+      expect((e as Error).message).toContain('docs_dirs');
+    }
+  });
+
+  it('throws ConfigError when docs_dirs contains a non-string element', () => {
+    const path = writeTmpConfig('docs_dirs:\n  - 42\n');
+    try {
+      loadConfig(path);
+      throw new Error('expected loadConfig to throw');
+    } catch (e) {
+      expect(e).toBeInstanceOf(ConfigError);
+      expect((e as Error).message).toContain('docs_dirs');
+    }
+  });
+
+  it('accepts docs_dirs as an array of strings', () => {
+    const path = writeTmpConfig("docs_dirs:\n  - docs\n  - wiki\n");
+    const cfg = loadConfig(path);
+    expect(cfg.docs_dirs).toEqual(['docs', 'wiki']);
   });
 });

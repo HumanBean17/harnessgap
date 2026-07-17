@@ -38,10 +38,11 @@ describe('classifyCmd — precedence test > config > build > other', () => {
     expect(classifyCmd('npm run build', [...DEFAULTS, 'build'])).toBe('test');
   });
 
-  it('precedence: config wins over build (docker compose install-shaped cmd)', () => {
-    // "setup install" — both `setup` (config) and the absence of build tokens;
-    // confirms config rank sits above build.
-    expect(classifyCmd('npm setup install', DEFAULTS)).toBe('config');
+  it('precedence: config wins over build when both tokens present', () => {
+    // `setup` (config catalog) AND `tsc` (build catalog) both match — config
+    // rank sits above build, so config wins. (The earlier 'npm setup install'
+    // shape had NO build token, so it never exercised config>build.)
+    expect(classifyCmd('npm setup tsc', DEFAULTS)).toBe('config');
   });
 
   it('config catalog: prisma migrate dev → config', () => {

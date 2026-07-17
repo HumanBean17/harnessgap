@@ -202,7 +202,7 @@ All additions are pure or thin-orchestration; the only new I/O is the doc-existe
 |---|---|---|
 | `--diagnose` flag | `src/cli.ts` | commander wiring; threads a `diagnose: boolean` into `runScan`. |
 | Diagnose step in `runScan` | `src/pipeline.ts` | after `runDetector`, when `diagnose`: build profiles → gather repo-context → classify → attach `diagnoses`. Off by default; `runScan` output unchanged otherwise. |
-| `computeEvidence(events) → SessionEvidence` | **`src/detector/evidence.ts` (new)** | buckets failed execs by cmd-class and edited files by file-class while the detector walks events. Populated only when `--diagnose`. |
+| `computeEvidence(events) → SessionEvidence` | **`src/diagnoser/evidence.ts` (new)** | buckets failed execs by cmd-class and edited files by file-class while the detector walks events. Populated only when `--diagnose`. |
 | `classifyCmd(cmd)`, `classifyFile(path)` | **`src/diagnoser/classify-util.ts` (new)** | pure classifiers over fixed catalogs; `classifyCmd` reuses `cfg.areas.test_cmd_patterns` for `test`. |
 | `gatherRepoContext(unitKey, repoRoot, docsDirs)` | **`src/diagnoser/repo-context.ts` (new)** | the only new I/O: doc-existence under `docs_dirs`, path-confined to the repo root, fail-open. |
 | `classify(profile, repoContext, cfg) → Diagnosis` | **`src/diagnoser/classify.ts` (new)** | the pure rule engine (§6). |
