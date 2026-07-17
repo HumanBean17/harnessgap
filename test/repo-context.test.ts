@@ -164,4 +164,38 @@ describe('gatherRepoContext', () => {
     expect(r.matchedPath).toBe('docs/architecture/billing.md');
     expect(r.checked).toEqual(['docs', 'wiki']);
   });
+
+  // Top-level entry-point symlink guard: if the docsDir itself is a symlink to
+  // an outside dir, confinement (pure path.resolve math) passes lexically but
+  // readdirSync would follow the link at the kernel level, leaking target
+  // files in as fabricated matches (e.g. billing.md → docs/sub/billing.md).
+  // The docsDir must be lstat'd at the entry and rejected if it is a symlink.
+  it('10. a symlinked docsDir (top level) is NOT traversed (target file does not leak)', () => {
+    const tmp = tmpRepo();
+    // Real dir OUTSIDE the repo holding what would be a matching file.
+    const realOutside = path.join(
+      os.tmpdir(),
+      `harnessgap-repoctx-topdir-${process.pid}-${Date.now()}`,
+    );
+    mkdir(path.join(realOutside, 'sub'));
+    fs.writeFileSync(path.join(realOutside, 'sub', 'billing.md'), 'secret\n');
+    try {
+      // <repoRoot>/docs is itself a symlink → realOutside. Without the
+      // entry-point guard, gatherRepoContext would follow it and emit a
+      // fabricated match `docs/sub/billing.md`.
+      fs.symlinkSync(realOutside, path.join(tmp, 'docs'));
+
+      const r = gatherRepoContext('src/billing', tmp, ['docs']);
+      expect(r.docExists).toBe(false);
+      expect(r.matchedPath).toBe(null);
+      // The symlinked docsDir still appears in checked (audited as attempted).
+      expect(r.checked).toEqual(['docs']);
+    } finally {
+      try {
+        fs.rmSync(realOutside, { recursive: true, force: true });
+      } catch {
+        /* best-effort cleanup */
+      }
+    }
+  });
 });

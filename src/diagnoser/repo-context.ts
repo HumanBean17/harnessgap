@@ -162,6 +162,20 @@ export function gatherRepoContext(
     const dirAbs = path.resolve(rootAbs, docsDir);
     if (dirAbs !== rootAbs && !dirAbs.startsWith(prefix)) continue;
 
+    // Entry-point symlink guard: if the docsDir itself is a symlink (e.g.
+    // `<repoRoot>/docs` → `/etc`), confinement above is purely lexical and
+    // cannot see the target — but readdirSync would follow the symlink at the
+    // kernel level, leaking files from outside the repo as matches. lstat the
+    // entry (NOT stat): if it is a symlink, skip it without traversal. This is
+    // the same lstatSync().isSymbolicLink() check applied to file candidates
+    // below in collectFiles, just lifted to the docsDir entry. Try/catch keeps
+    // a missing/unreadable entry fail-open (no match, still in `checked`).
+    try {
+      if (fs.lstatSync(dirAbs).isSymbolicLink()) continue;
+    } catch {
+      continue; // missing or unreadable — fail open
+    }
+
     const files: string[] = [];
     try {
       collectFiles(dirAbs, prefix, rootAbs, files);
