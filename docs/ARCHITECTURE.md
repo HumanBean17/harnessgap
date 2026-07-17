@@ -58,7 +58,7 @@ reuses the adapter and detector verbatim and only adds persistence.
 | `src/diagnoser/profile.ts` | Pure per-area profile builder: groups flagged records by area, derives per-signal medians, elevation flags (vs `bootstrap_thresholds`, mode-independent), and element-wise evidence sums. | `buildProfiles`, `UnitProfile` |
 | `src/diagnoser/repo-context.ts` | Doc-existence grounding — the only new I/O in the slice. Recursively lists files under `cfg.docs_dirs`, path-confined to the repo root, never follows symlinks, fail-open. | `gatherRepoContext`, `RepoContext` |
 | `src/diagnoser/classify.ts` | Pure cause-classification rule engine: picks one `Cause` per unit from `{profile, repoContext, cfg}` and emits a derived-only `Diagnosis`. | `classify` |
-| `src/diagnoser/index.ts` | Thin orchestration: `buildProfiles` → per-unit `gatherRepoContext` → `classify`. Per-unit try/catch is the fail-open boundary; never throws. | `diagnoseUnits` |
+| `src/diagnoser/index.ts` | Thin orchestration: `buildProfiles` → per-unit `gatherRepoContext` → `classify`. Two fail-open layers: outer batch-level try/catch (degrades to `[]`) + per-unit try/catch (degrades to one `unclassified` Diagnosis); never throws. | `diagnoseUnits` |
 | `src/aggregate/leaderboard.ts` | Pure aggregation: per-session records → per-area `AreaRow`s + summary. | `aggregateAreas` |
 | `src/output/json.ts` | Pure `JsonOutput` envelope assembler for `--json`. | `buildJsonEnvelope` |
 | `src/output/human.ts` | Pure human-readable leaderboard formatter (the default table). | `formatHuman` |
@@ -545,14 +545,23 @@ for `unclassified` it is `0`.
 
 ### Fail-open
 
-`diagnoseOne` (`src/diagnoser/index.ts`) wraps `gatherRepoContext` + `classify`
-in a per-unit try/catch. Any throw degrades that one unit to a derived-only
-`{ cause: 'unclassified', confidence: 0, rationale: 'diagnosis unavailable',
-evidence_refs: [] }`; the batch continues. `diagnoseUnits` itself never throws.
-Only `loadConfig`/arg errors throw (unchanged from Slice 1). `gatherRepoContext`
-is also internally fail-open: a missing/unreadable/escaping `docs_dirs` entry or
-any read error → `docExists: false` for that unit, never thrown (every attempted
-dir still appears in `checked`).
+Two layers in `src/diagnoser/index.ts`:
+
+1. **Outer (batch-level):** `diagnoseUnits` wraps `buildProfiles` + the per-unit
+   loop in a try/catch that returns `[]` on any throw. `buildProfiles` can't
+   throw on detector-produced records, but `runScan` calls `diagnoseUnits`
+   unguarded, so this makes the "never throws / never aborts the scan" contract
+   unconditional.
+2. **Inner (per-unit):** `diagnoseOne` wraps `gatherRepoContext` + `classify`
+   in a per-unit try/catch. Any throw degrades that one unit to a derived-only
+   `{ cause: 'unclassified', confidence: 0, rationale: 'diagnosis unavailable',
+   evidence_refs: [] }`; the batch continues.
+
+`diagnoseUnits` itself never throws. Only `loadConfig`/arg errors throw
+(unchanged from Slice 1). `gatherRepoContext` is also internally fail-open: a
+missing/unreadable/escaping `docs_dirs` entry or any read error →
+`docExists: false` for that unit, never thrown (every attempted dir still
+appears in `checked`).
 
 ### Privacy contract (derived-only)
 
