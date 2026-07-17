@@ -7,7 +7,8 @@ oscillating edits, abandonment, and more).
 
 This is Slice 1: it **writes nothing, installs nothing, persists nothing**. It
 reads transcripts under `~/.claude/projects/` and prints a leaderboard to stdout.
-Diagnosis, synthesis, routing, and measurement are deferred to later slices.
+Cause attribution is available as an opt-in via `scan --diagnose` (Slice 4);
+synthesis, routing, and measurement are deferred to later slices.
 
 For a one-page summary see [README.md](../README.md). For internals see
 [ARCHITECTURE.md](ARCHITECTURE.md).
@@ -67,6 +68,7 @@ harnessgap scan [options]
 | `--json` | off | Emit the JSON envelope instead of the human-readable table. |
 | `--calibrate` | off | Print per-signal distributions + active thresholds + scoring mode. Aggregate only — no per-session detail. |
 | `--bootstrap` | off | Force bootstrap (absolute-threshold) scoring instead of percentile. |
+| `--diagnose` | off | Classify each flagged area into a typed cause (`doc` / `config-doc` / `test-gap` / `refactor-flag` / `inherent-complexity`) or `unclassified`. Adds a `CAUSE` column to the table and a `diagnoses` field to `--json`. Reads `docs/` for grounding. |
 | `--config <path>` | `.harnessgap.yml` in cwd | Path to a config file. |
 | `--claude-dir <path>` | `~/.claude` | Claude Code config directory (contains `projects/`). |
 | `--version` | — | Print the harnessgap version and exit. |
@@ -96,9 +98,9 @@ harnessgap scan --limit 50
 ## Configuration (`.harnessgap.yml`)
 
 Optional. `scan` runs with built-in defaults if no file is present. The file is a
-YAML object with two top-level keys — `detector` and `areas`. Anything else is
-**rejected**. Values are deep-merged over the defaults (arrays replace, they do
-not concatenate).
+YAML object with four top-level keys — `detector`, `areas`, `docs_dirs`, and
+`diagnose`. Anything else is **rejected**. Values are deep-merged over the
+defaults (arrays replace, they do not concatenate).
 
 ```yaml
 detector:
@@ -140,10 +142,18 @@ areas:
   explore_ratio_min: 0.8           # abandonment explore-ratio gate
   suppress_abandonment_when_no_exec: true
   test_cmd_patterns: [test, spec, pytest, "npm test", "npm run test", make, "cargo test", "go test", jest, vitest]
+
+docs_dirs: [docs]                    # repo-relative dirs searched for doc-existence grounding under --diagnose
+diagnose:                            # cause-rule floors (Slice 4); v1 priors, calibrate via dogfood (issue #15)
+  confidence_floor: 0.5              # min score for a specific cause to win
+  config_share_floor: 0.5            # config-failures / total-failures bar for config-doc
+  test_share_floor: 0.5              # test-file-edits / total-edits bar for test-gap
+  code_share_floor: 0.5              # code-file-edits / total-edits bar for refactor-flag
+  score_floor: 70                    # mean-score bar for the inherent-complexity residual
 ```
 
-Keys not shown here (`docs_dirs`, `synthesizer`, `router`, `tasks`, `repo`) are
-**not** part of Slice 1 and will be rejected.
+Keys not shown here (`synthesizer`, `router`, `tasks`, `repo`) are **not**
+shipped and will be rejected.
 
 ---
 
@@ -379,6 +389,108 @@ bounded by the model.
 
 ---
 
+## Diagnoser (`scan --diagnose`, Slice 4)
+
+`harnessgap scan --diagnose` adds **grounded cause attribution** to the
+leaderboard. For each flagged area it picks one cause from a closed taxonomy,
+grounded in the area's signal profile, whether a doc already exists under
+`docs_dirs`, and an opt-in evidence projection (failed-exec counts by cmd-class
++ edited-file counts by file-class). It is a pure rule engine — no LLM, no
+network, no git. It runs **only** under `--diagnose`; with the flag off, the
+table has no `CAUSE` column, `--json` has no `diagnoses` field, and output is
+byte-identical to Slice 3.
+
+### What each cause means (plain terms)
+
+| Cause | What it's telling you | What to do |
+| --- | --- | --- |
+| `doc` | The agent explores and re-reads the same files (`explore_ratio` + `reread` elevated), and **no doc** matching the area was found under `docs_dirs`. | Add or surface a doc for the area; check whether the doc exists but is named differently. |
+| `config-doc` | Failures concentrate on **config-class commands** (install, migrate, docker, prisma, …) — `failure_streak` elevated with a high config-failure share. | Improve setup/config docs; check whether env/setup steps are stale. |
+| `test-gap` | The agent rewrites **tests** as behavior keeps failing (`oscillation` + `failure_streak` elevated, test-file edits dominate) **without user corrections**. | Add or strengthen tests for the area's actual behavior. |
+| `refactor-flag` | The agent is **corrected** while editing **code** (`oscillation` + `corrections` elevated, code-file edits dominate). An existing doc makes this stronger (doc is present but code still struggles → the code is the problem). | Refactor the code; the friction is structural, not a missing doc. |
+| `inherent-complexity` | Expensive per line (`wall_clock_per_line` elevated) with a high mean score **and no specific signature fit**. The "capable model, high cost, quiet signals" case. | Likely genuine difficulty — accept the cost, or split the work. |
+| `unclassified` | Nothing decisive — the best cause's confidence was below `confidence_floor`, and the inherent-complexity residual did not fire. | Look at the area's signals directly; the rule engine is not confident enough to name a cause. |
+
+### How to read the CAUSE column
+
+The human table gains a `CAUSE` column between `MEAN SCORE` and `TOP SIGNALS`,
+**only** when `--diagnose` is on and at least one area is flagged. Each flagged
+area's cell is either:
+
+- `cause(confidence)` — e.g. `doc(0.78)`, `refactor-flag(0.92)`. `confidence`
+  is in `[0,1]`; higher means the signature + grounding are stronger.
+- `-` — the area is flagged but its cause is `unclassified` (or no diagnosis
+  matched the area key).
+
+In `--json`, the same information appears under a top-level `diagnoses` array
+(one entry per flagged area, sorted by area key ascending):
+
+```jsonc
+"diagnoses": [
+  {
+    "unit": { "kind": "area", "key": "src/billing" },
+    "cause": "doc",                 // one of the 5 causes | "unclassified"
+    "confidence": 0.78,             // [0,1]; 0 for unclassified
+    "rationale": "explore_ratio(0.9) + reread(7) elevated; no doc under docs",
+    "evidence_refs": [
+      { "kind": "signal", "name": "explore_ratio", "value": 0.9 },
+      { "kind": "signal", "name": "reread", "value": 7 },
+      { "kind": "doc_absent", "checked": ["docs"] }
+    ]
+  }
+  // ...
+]
+```
+
+Every `evidence_refs` leaf and every `rationale` is **derived only** — signal
+medians, integer counts, ratios, and doc paths. No transcript prose, commands,
+or file bodies appear (same privacy contract as the rest of the output).
+
+### `docs_dirs` + `diagnose` config
+
+Two new top-level keys (both optional, both with defaults):
+
+```yaml
+docs_dirs: [docs]                    # repo-relative dirs searched for doc-existence grounding
+diagnose:                            # cause-rule floors (v1 priors)
+  confidence_floor: 0.5              # min score for a specific cause to win
+  config_share_floor: 0.5            # config-doc: config-failures / total-failures bar
+  test_share_floor: 0.5              # test-gap: test-file-edits / total-edits bar
+  code_share_floor: 0.5              # refactor-flag: code-file-edits / total-edits bar
+  score_floor: 70                    # inherent-complexity: mean-score bar
+```
+
+- **`docs_dirs`** — list of repo-relative directories searched for doc-existence.
+  Reads are path-confined to the repo root and never follow symlinks; a
+  missing/unreadable entry is treated as "searched, no match" (fail-open).
+- **`diagnose`** — the five rule floors. They are **v1 priors**, not tuned
+  defaults — see the calibration caveat below.
+
+### Honest caveats (read before trusting an individual cause)
+
+- **Fuzzy doc-match.** A doc matches an area if the area's leaf segment (e.g.
+  `billing`) appears as a path segment or filename stem under any `docs_dirs`
+  entry. Token match will miss docs named differently and over-match common
+  tokens (`utils`, `common`, `api`). Grounding is advisory, not authoritative.
+- **Session→area evidence attribution.** A session's failure/edit buckets are
+  attributed to **every area** the session touches; v1 does not map files to
+  specific areas. This blurs `config-doc` / `test-gap` / `refactor-flag` on
+  sessions that touch many areas at once.
+- **No git churn.** Code-stability is grounded by signals + doc-existence, not
+  by churn. `refactor-flag` keys on corrections + oscillation, not on edit
+  frequency.
+- **Calibration is dogfood, not a promise.** The five floors are v1 priors. They
+  must be pinned on a real repo before you trust individual causes — if `doc`
+  over-fires on code problems, raise the explore/reread bar or require
+  doc-absence more strictly. Track this in
+  [issue #15](https://github.com/HumanBean17/harnessgap/issues/15).
+- **Medium-confidence causes.** `doc` and `inherent-complexity` are the
+  high-confidence causes; `config-doc` / `test-gap` / `refactor-flag` are
+  medium-confidence because their file/cmd attribution is session-profile-mapped-
+  to-area (see the session→area caveat above).
+
+---
+
 ## Privacy
 
 harnessgap runs offline on private transcripts. Five guarantees:
@@ -464,4 +576,5 @@ included.
 - [README.md](../README.md) — one-page summary (install, flags, config, privacy).
 - [ARCHITECTURE.md](ARCHITECTURE.md) — module map, pipeline, normalized event schema, scoring, security model.
 - [Design spec](superpowers/specs/archive/2026-07-12-harnessgap-detection-slice-design.md)
+- [Diagnoser spec (Slice 4)](superpowers/specs/active/2026-07-18-harnessgap-diagnoser-design.md)
 - [Implementation plan](superpowers/plans/archive/2026-07-12-harnessgap-detection-slice.md)

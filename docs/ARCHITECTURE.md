@@ -32,7 +32,7 @@ reuses the adapter and detector verbatim and only adds persistence.
 
 | File | Responsibility | Key exports |
 | --- | --- | --- |
-| `src/types.ts` | Shared type catalog. Field names/shapes are contracts pinned to the spec. | `NormalizedEvent`, `NormalizedEnvelope`, `SignalValues`, `StruggleRecord`, `AreaRow`, `JsonOutput`, `Config`, `Warnings`, `SignalName`, `ScoringMode`, `Severity`, `BaselinePath`, `BaselineState`, `BaselineAssessment`, `RepoFinding`, `ToolKind`, `EventKind`, `ReflectFinding`, `StopHookOutput`, `ReflectFrame` |
+| `src/types.ts` | Shared type catalog. Field names/shapes are contracts pinned to the spec. | `NormalizedEvent`, `NormalizedEnvelope`, `SignalValues`, `StruggleRecord`, `AreaRow`, `JsonOutput`, `Config`, `Warnings`, `SignalName`, `ScoringMode`, `Severity`, `BaselinePath`, `BaselineState`, `BaselineAssessment`, `RepoFinding`, `ToolKind`, `EventKind`, `ReflectFinding`, `StopHookOutput`, `ReflectFrame`, `Cause`, `SessionEvidence`, `EvidenceRef`, `Diagnosis`, `CmdClass`, `FileClass` |
 | `src/config.ts` | Load + validate `.harnessgap.yml`; deep-merge over defaults; parse `--since` durations. | `loadConfig`, `parseDuration`, `DEFAULT_CONFIG`, `ConfigError` |
 | `src/git.ts` | Stat-based MAIN-repo resolver. Walks up from a cwd to the nearest directory `.git` (the main repo; worktrees only hold a `.git` file). No git invocation, no shell. Memoized by cwd. | `resolveMainRepo`, `walkToMainRepo` |
 | `src/walk.ts` | Discover `.jsonl` transcripts under `<claudeDir>/projects/*/*.jsonl`. Rejects symlinks. | `discoverTranscripts`, `defaultClaudeDir` |
@@ -51,7 +51,13 @@ reuses the adapter and detector verbatim and only adds persistence.
 | `src/detector/record.ts` | Pure projection: assembles a `StruggleRecord` from envelope + signals + score + areas. | `assembleStruggleRecord` |
 | `src/detector/orientation.ts` | Pure pre-edit orientation metric: distinct depth-2 dir prefixes + distinct read files before the first edit. `null` for zero-edit sessions. | `computePreEditOrientation` |
 | `src/detector/ambient.ts` | Pure ambient baseline assessor: combines orientation + acute struggle-rate paths into a `RepoFinding` (null unless elevated) + always-populated `BaselineAssessment`. | `assessAmbient` |
-| `src/detector/index.ts` | Detector orchestration: signals → score (once, whole batch) → ambient baseline → areas → record. Returns `{records, finding, baseline}`. | `runDetector` |
+| `src/detector/index.ts` | Detector orchestration: signals → score (once, whole batch) → ambient baseline → areas → record. Returns `{records, finding, baseline}`. Under `--diagnose`, also runs the opt-in `computeEvidence` projection per envelope (the only detector call site for the Diagnoser; absent by default so `StruggleRecord.evidence` is unset and default output stays byte-identical). | `runDetector` |
+| `src/diagnoser/classify-util.ts` | Pure cmd/file classifiers over fixed catalogs. `classifyCmd` reuses `cfg.areas.test_cmd_patterns` for the `test` bucket. | `classifyCmd`, `classifyFile` |
+| `src/diagnoser/evidence.ts` | Pure evidence projection: buckets failed execs by cmd-class + edited files by file-class. Single pass; zero-filled buckets. | `computeEvidence` |
+| `src/diagnoser/profile.ts` | Pure per-area profile builder: groups flagged records by area, derives per-signal medians, elevation flags (vs `bootstrap_thresholds`, mode-independent), and element-wise evidence sums. | `buildProfiles`, `UnitProfile` |
+| `src/diagnoser/repo-context.ts` | Doc-existence grounding — the only new I/O in the slice. Recursively lists files under `cfg.docs_dirs`, path-confined to the repo root, never follows symlinks, fail-open. | `gatherRepoContext`, `RepoContext` |
+| `src/diagnoser/classify.ts` | Pure cause-classification rule engine: picks one `Cause` per unit from `{profile, repoContext, cfg}` and emits a derived-only `Diagnosis`. | `classify` |
+| `src/diagnoser/index.ts` | Thin orchestration: `buildProfiles` → per-unit `gatherRepoContext` → `classify`. Per-unit try/catch is the fail-open boundary; never throws. | `diagnoseUnits` |
 | `src/aggregate/leaderboard.ts` | Pure aggregation: per-session records → per-area `AreaRow`s + summary. | `aggregateAreas` |
 | `src/output/json.ts` | Pure `JsonOutput` envelope assembler for `--json`. | `buildJsonEnvelope` |
 | `src/output/human.ts` | Pure human-readable leaderboard formatter (the default table). | `formatHuman` |
@@ -98,9 +104,15 @@ reuses the adapter and detector verbatim and only adds persistence.
    `RepoFinding` or null; `baseline` is always populated).
 8. **Aggregate** — `aggregateAreas(records, cfg)` rolls per-session records
    into per-area `AreaRow[]` + a summary.
-9. **Output** — branch by `--calibrate` / `--json` / human. `mode` is read from
-   the first record (or `'bootstrap'` when there are none); `outputRepo` is the
-   filtered repo (or `''`).
+9. **Diagnose (opt-in, Slice 4)** — only when `opts.diagnose === true`,
+   `diagnoseUnits(records, cfg, outputRepo)` produces one `Diagnosis` per flagged
+   area (empty `[]` when nothing is flagged or the repo root is unresolved).
+   Skipped entirely by default, so `ScanResult.diagnoses` is **unset** (key
+   absent, not just `undefined`) and default output stays byte-identical to
+   Slice 3. See §11.
+10. **Output** — branch by `--calibrate` / `--json` / human. `mode` is read from
+    the first record (or `'bootstrap'` when there are none); `outputRepo` is the
+    filtered repo (or `''`).
 
 ## 4. Normalized event schema v1
 
@@ -377,6 +389,16 @@ stream errors are skipped and counted, never thrown (`src/adapter/stream.ts:127`
   + every output leaf is a primitive/enum); `test/init.test.ts` (fail-open
   wrapper, idempotent settings merge, `/reflect` command); `test/cli.reflect.test.ts`
   (the `reflect` / `init` CLI wiring).
+- **Diagnoser tests** (Slice 4) — `test/classify-util.test.ts` (cmd/file
+  catalogs + precedence); `test/evidence.test.ts` + `test/detector-evidence.test.ts`
+  (bucketing + opt-in wiring in the detector); `test/diagnose-profile.test.ts`
+  (grouping, medians, mode-independent elevation, evidence sums);
+  `test/repo-context.test.ts` (doc-match hit/miss, missing dir fail-open,
+  path-confinement, symlink rejection); `test/classify.test.ts` (each cause's
+  gate + the selection order + tie-break + confidence floor + doc-boost);
+  `test/diagnose.test.ts` (per-unit fail-open + deterministic sort); plus
+  `test/snapshot.test.ts` (byte-identical default snapshot + an opt-in
+  `--diagnose` snapshot) and the §9 privacy case (e) for `--diagnose`.
 
 ## 10. Session-end reflect (`reflect` + `init claude`, Slice 3)
 
@@ -449,9 +471,113 @@ on clean sessions; if too high, tighten via one of the spec's levers (drop the
 `detector.reflect` block). See [`CONSUMER_GUIDE.md`](CONSUMER_GUIDE.md)
 "Session-end reflect".
 
-## 11. Pointers
+## 11. Diagnoser (`scan --diagnose`, Slice 4)
+
+Slice 4 adds **grounded cause attribution** as an opt-in pass **after** the
+detection core. The pipeline seam is deliberate: `runDetector`, `scoreSessions`,
+`localizeAreas`, `aggregateAreas`, `assembleStruggleRecord`, scrubbing, size
+caps, and `resolveMainRepo` are all reused verbatim. With `--diagnose` off,
+`StruggleRecord.evidence` is unset, `ScanResult.diagnoses` is unset, and the
+human / `--json` / `--calibrate` outputs are byte-identical to Slice 3.
+
+The pipeline seam (in `runScan`, `src/pipeline.ts`):
+
+1. **`runDetector(…, { collectEvidence: opts.diagnose === true })`** — when
+   `--diagnose` is on, the detector additionally calls
+   `computeEvidence(env.events, cfg.areas.test_cmd_patterns)` per envelope
+   (`src/diagnoser/evidence.ts`, the only call site) and attaches the result to
+   `StruggleRecord.evidence?`. The projection is a single pass that buckets
+   failed-exec cmds (via `classifyCmd` → `config | test | build | other`) and
+   edited files (via `classifyFile` → `test | code | other`); zero-filled
+   buckets; reuses upstream scrubbing + size caps. Off by default → `evidence`
+   is absent.
+2. **`diagnoseUnits(records, cfg, outputRepo)`** (`src/diagnoser/index.ts`) —
+   runs only under `--diagnose`; skipped when the filtered repo root is
+   unresolved (`outputRepo === ''`), in which case `diagnoses = []`. Produces
+   one `Diagnosis` per area touched by at least one flagged record (unflagged
+   records are skipped at the source in `buildProfiles`).
+
+Inside `diagnoseUnits`, per unit: `buildProfiles` groups flagged records by area
+and derives per-signal medians, elevation flags, and element-wise evidence sums;
+`gatherRepoContext` probes `cfg.docs_dirs` for an existing doc; `classify` picks
+the cause. Output is sorted by `unit.key` ascending (deterministic).
+
+### Elevation yardstick (mode-independent)
+
+`buildProfiles` flags a signal **elevated** when the unit's per-signal median
+meets `cfg.detector.bootstrap_thresholds` (`>=` for numbers; majority-`true` AND
+threshold `true` for `abandonment`; nullable signals elevated only when the
+median is non-null and meets threshold). This is the same threshold set used by
+bootstrap scoring, so elevation reads the same in percentile and bootstrap modes
+— the percentile mode is reserved for the leaderboard `score_pct`, not for
+Diagnoser elevation.
+
+### Cause selection (pure rule engine, `src/diagnoser/classify.ts`)
+
+`classify(profile, repoContext, cfg) → Diagnosis` is pure. Selection order:
+
+1. Compute the four specific causes' eligibility + score (each cause's score is
+   the fraction of the 5 signature signals
+   `{explore_ratio, reread, failure_streak, corrections, oscillation}` currently
+   elevated; `refactor-flag`'s score is boosted by `0.2` when `repoContext.docExists`).
+   Gates (verbatim from §6 of the spec):
+
+   | Cause | Gate |
+   | --- | --- |
+   | `doc` | `explore_ratio` + `reread` elevated AND `!docExists` |
+   | `config-doc` | `failure_streak` elevated AND `config-failures / total-failures >= config_share_floor` |
+   | `test-gap` | `oscillation` + `failure_streak` elevated AND `test-file-edits / total-edits >= test_share_floor` AND `!corrections` elevated |
+   | `refactor-flag` | `oscillation` + `corrections` elevated AND `code-file-edits / total-edits >= code_share_floor` (docExists boosts score) |
+
+2. Highest score wins; ties broken by fixed precedence
+   `doc > config-doc > test-gap > refactor-flag`.
+3. If the winner's score `>= cfg.diagnose.confidence_floor` → that cause.
+4. Else if `wall_clock_per_line` elevated AND `meanScore >= cfg.diagnose.score_floor`
+   → `inherent-complexity` (the "capable model, high cost, quiet signals"
+   residual).
+5. Else → `unclassified`.
+
+`confidence` for a specific cause is the signature score (the doc boost applies
+to `refactor-flag` only); for `inherent-complexity` it is proportional to
+`wall_clock_per_line_ms` capped at `2 × bootstrap_thresholds.wall_clock_per_line_ms`;
+for `unclassified` it is `0`.
+
+### Fail-open
+
+`diagnoseOne` (`src/diagnoser/index.ts`) wraps `gatherRepoContext` + `classify`
+in a per-unit try/catch. Any throw degrades that one unit to a derived-only
+`{ cause: 'unclassified', confidence: 0, rationale: 'diagnosis unavailable',
+evidence_refs: [] }`; the batch continues. `diagnoseUnits` itself never throws.
+Only `loadConfig`/arg errors throw (unchanged from Slice 1). `gatherRepoContext`
+is also internally fail-open: a missing/unreadable/escaping `docs_dirs` entry or
+any read error → `docExists: false` for that unit, never thrown (every attempted
+dir still appears in `checked`).
+
+### Privacy contract (derived-only)
+
+`Diagnosis.rationale` and every `evidence_refs` leaf are derived-only — signal
+medians, integer counts, ratios, doc paths. No transcript prose, commands, or
+file bodies. `gatherRepoContext` reads `docs/` but emits only matched paths
+(repo-relative) or the list of dirs checked. The `--json` `diagnoses` field
+carries the same derived values. The cmd/file catalogs are fixed literals
+(`src/diagnoser/classify-util.ts`); no record string is copied into a
+`Diagnosis`. Enforced by `test/privacy.test.ts` (e): seeds a prose marker in a
+user-message/cmd/file field under `--diagnose`, then asserts it is absent from
+`rationale` and every `evidence_refs` leaf, and every leaf is a primitive / enum
+/ closed-union literal.
+
+### No new egress, no new deps
+
+The Diagnoser imports only `node:fs` + `node:path` (in `repo-context.ts`) and
+its own pure modules. No network, no `git`, no new runtime dependencies, so
+`test/egress.test.ts` and `test/packaging.test.ts` pass unmodified. The only new
+I/O is the local doc-existence read, path-confined to the repo root and never
+following symlinks (mirrors `src/walk.ts`).
+
+## 12. Pointers
 
 - [Spec (authoritative)](superpowers/specs/archive/2026-07-12-harnessgap-detection-slice-design.md) — §5 scoring, §11 privacy are the contract.
+- [Diagnoser spec (Slice 4)](superpowers/specs/active/2026-07-18-harnessgap-diagnoser-design.md) — §5 contracts, §6 cause taxonomy, §11 open questions.
 - [Plan](superpowers/plans/archive/2026-07-12-harnessgap-detection-slice.md) — implementation plan.
 - [README](../README.md) — user-facing usage, flags, config defaults, privacy summary.
 - [Consumer guide](CONSUMER_GUIDE.md) — consumer-facing docs.
