@@ -358,12 +358,17 @@ stream errors are skipped and counted, never thrown (`src/adapter/stream.ts:127`
   locks the regex behavior against string fixtures (multi-line imports,
   side-effect imports, dynamic imports, `require`, `undici`, and the
   `WebFetch` vs `fetch` word-boundary distinction).
-- **Privacy + safety test** (`test/privacy.test.ts`) — three sections: (a)
+- **Privacy + safety test** (`test/privacy.test.ts`) — five sections: (a)
   secret-shape fixtures through `streamSession` → `***REDACTED***` present and
   original secret absent from `--json`; (b) malformed-transcript prose absent
   from human / `--json` / `--calibrate` / warnings; (c) safety fixtures —
   symlinked transcript rejected, unresolvable cwd skipped, oversized line
-  skipped, and all `warnings` fields are integers.
+  skipped, and all `warnings` fields are integers; (d) baseline / `repo_findings`
+  / calibrate surfaces prose-free at ≥ `min_sessions` (forces the ambient finding
+  to fire, then asserts no prose marker reaches those surfaces); (e)
+  `--diagnose` leaves prose-free (forces a `Diagnosis` to fire, then asserts no
+  marker reaches `rationale` or any `evidence_refs` leaf, and every leaf is a
+  primitive / enum / closed-union literal).
 - **Reflect + init tests** (Slice 3) — `test/hook.test.ts` (pure
   `buildReflectFinding` + `formatStopHookOutput`, incl. a prose-absent /
   primitives-only privacy case); `test/reflect.test.ts` (`runReflect`
