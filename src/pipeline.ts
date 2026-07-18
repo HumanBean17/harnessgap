@@ -7,13 +7,19 @@
 // Filter / mode / output-branching choices (documented here, pinned to the
 // task-16 brief + resolution notes):
 //
-// - repo resolution: `resolveMainRepo` walks up from a session cwd to the
-//   nearest directory `.git` (the main repo; worktrees only hold a `.git`
-//   file). Every session's repo is normalized to its MAIN repo root, so a
-//   project's main checkout and all its worktrees share one repo value and
-//   aggregate together. The session's full `cwds` list is tried in order, so a
-//   session whose representative cwd was a since-deleted worktree still resolves
-//   via an ancestor.
+// - repo resolution: `resolveRepo` walks up from a session cwd to the nearest
+//   directory `.git` (the main repo; worktrees only hold a `.git` file). Every
+//   session's repo is normalized to its MAIN repo root, so a project's main
+//   checkout and all its worktrees share one repo value and aggregate together.
+//   The session's full `cwds` list is tried in order, so a session whose
+//   representative cwd was a since-deleted worktree still resolves via an
+//   ancestor. Sibling worktrees (a since-deleted checkout that was a SIBLING of
+//   the main repo, not nested under it) are recovered by reading candidate
+//   siblings' `.git/worktrees/<name>/gitdir` registrations — see `src/git.ts`.
+//   When that recovery fires, the resolver also returns the worktree CHECKOUT
+//   root, which `relativizeEnvelopeFiles` strips so sibling-worktree file paths
+//   collapse onto the main checkout's repo-relative areas (otherwise they are
+//   absolute and outside the repo prefix, fragmenting the leaderboard).
 // - repo filter: `opts.repo` (or process.cwd()'s main repo when unset) is itself
 //   normalized through `resolveMainRepo`, so `--repo <worktree>` or
 //   `--repo <subdir>` matches the whole project.
@@ -33,7 +39,8 @@
 import { loadConfig, parseDuration } from './config.js';
 import { discoverTranscripts, defaultClaudeDir } from './walk.js';
 import { streamSession } from './adapter/stream.js';
-import { resolveMainRepo } from './git.js';
+import { resolveMainRepo, resolveRepo } from './git.js';
+import type { RepoResolution } from './git.js';
 import { relativizeEnvelopeFiles } from './relativize.js';
 import { runDetector } from './detector/index.js';
 import { aggregateAreas } from './aggregate/leaderboard.js';
@@ -115,7 +122,7 @@ export async function runScan(opts: ScanOptions): Promise<ScanResult> {
 
   // 3. Stream each file, resolve repo, accumulate warnings. Thread a single
   //    git-cache across all sessions (cwd repeats are common across transcripts).
-  const cache = new Map<string, string | null>();
+  const cache = new Map<string, RepoResolution | null>();
   const envelopes: NormalizedEnvelope[] = [];
 
   for (const file of files) {
@@ -135,9 +142,14 @@ export async function runScan(opts: ScanOptions): Promise<ScanResult> {
     // representative cwd is first; if it was a since-deleted worktree, a later
     // cwd (or the walk-up from the first) usually still finds the main repo.
     let repo: string | null = null;
+    let checkoutRoot: string | null = null;
     for (const c of cwds) {
-      repo = resolveMainRepo(c, cache);
-      if (repo !== null) break;
+      const info = resolveRepo(c, cache);
+      if (info !== null) {
+        repo = info.repo;
+        checkoutRoot = info.checkoutRoot; // set only for sibling-worktree recovery
+        break;
+      }
     }
     if (repo === null) {
       warnings.unresolvable_cwd += 1;
@@ -147,8 +159,9 @@ export async function runScan(opts: ScanOptions): Promise<ScanResult> {
     envelope.repo = repo;
     // Now that the main repo is known, rewrite file paths to canonical
     // repo-relative form (strips the repo prefix + collapses worktree checkout
-    // prefixes) so areas are real code areas, not filesystem paths.
-    relativizeEnvelopeFiles(envelope, repo);
+    // prefixes, and strips a sibling-worktree checkout root) so areas are real
+    // code areas, not filesystem paths.
+    relativizeEnvelopeFiles(envelope, repo, checkoutRoot);
     envelopes.push(envelope);
   }
 
@@ -323,13 +336,14 @@ export async function runReflect(opts: ReflectOptions): Promise<ReflectResult> {
 
   // One git-cache threaded across every resolution in this call (mirrors
   // runScan): repo lookups repeat across transcripts and the target filter.
-  const cache = new Map<string, string | null>();
+  const cache = new Map<string, RepoResolution | null>();
 
   // 2. Resolve the single envelope to reflect on. --transcript wins (the
   //    per-stop hook path — cheap, one file); --latest discovers the most-recent
   //    session for the repo; neither → nothing to reflect on.
   let envelope: NormalizedEnvelope | null;
   let cwds: string[];
+  let stampedCheckoutRoot: string | null = null;
   if (opts.transcript !== undefined) {
     const streamed = await streamSession(opts.transcript);
     envelope = streamed.envelope;
@@ -338,6 +352,7 @@ export async function runReflect(opts: ReflectOptions): Promise<ReflectResult> {
     const picked = await pickLatestEnvelope(opts, cache);
     envelope = picked.envelope;
     cwds = picked.cwds;
+    stampedCheckoutRoot = picked.checkoutRoot;
   } else {
     throw new Error(
       'runReflect: a transcript path is required (pass --transcript <path>)',
@@ -348,7 +363,7 @@ export async function runReflect(opts: ReflectOptions): Promise<ReflectResult> {
   //    format. Fail-open: a null envelope (--latest found nothing) or an
   //    unresolvable repo yields a trip:false finding, which the hook-stop
   //    formatter renders as `{}`.
-  const finding = buildFindingFromEnvelope(envelope, cwds, cfg, cache);
+  const finding = buildFindingFromEnvelope(envelope, cwds, cfg, cache, stampedCheckoutRoot);
 
   let output: string;
   if (opts.format === 'hook-stop') {
@@ -373,8 +388,8 @@ export async function runReflect(opts: ReflectOptions): Promise<ReflectResult> {
  */
 async function pickLatestEnvelope(
   opts: ReflectOptions,
-  cache: Map<string, string | null>,
-): Promise<{ envelope: NormalizedEnvelope | null; cwds: string[] }> {
+  cache: Map<string, RepoResolution | null>,
+): Promise<{ envelope: NormalizedEnvelope | null; cwds: string[]; checkoutRoot: string | null }> {
   // targetRepo: normalize the filter through the resolver (like runScan) so
   // --repo <worktree> or --repo <subdir> matches the whole project. null when
   // neither opts.repo nor process.cwd() resolves → nothing can match.
@@ -386,7 +401,7 @@ async function pickLatestEnvelope(
   // discoverTranscripts sorts lexicographically (NOT by recency), so max
   // started_at is selected here; on ties the first-seen (smallest path) wins.
   let best:
-    | { envelope: NormalizedEnvelope; cwds: string[]; repo: string; started: number }
+    | { envelope: NormalizedEnvelope; cwds: string[]; repo: string; checkoutRoot: string | null; started: number }
     | null = null;
 
   for (const file of files) {
@@ -394,9 +409,14 @@ async function pickLatestEnvelope(
 
     // Resolve this session's main repo (try each cwd in order, like runScan).
     let repo: string | null = null;
+    let checkoutRoot: string | null = null;
     for (const c of cwds) {
-      repo = resolveMainRepo(c, cache);
-      if (repo !== null) break;
+      const info = resolveRepo(c, cache);
+      if (info !== null) {
+        repo = info.repo;
+        checkoutRoot = info.checkoutRoot;
+        break;
+      }
     }
     if (repo === null) continue; // unresolvable cwd → can't match
     if (repo !== targetRepo) continue; // different project → skip
@@ -415,16 +435,16 @@ async function pickLatestEnvelope(
     if (Number.isNaN(started)) continue;
 
     if (best === null || started > best.started) {
-      best = { envelope, cwds, repo, started };
+      best = { envelope, cwds, repo, checkoutRoot, started };
     }
   }
 
-  if (best === null) return { envelope: null, cwds: [] };
+  if (best === null) return { envelope: null, cwds: [], checkoutRoot: null };
 
   // Stamp the resolved repo so buildFindingFromEnvelope reuses it (no
   // re-resolution, no re-stream — the envelope is already in hand).
   best.envelope.repo = best.repo;
-  return { envelope: best.envelope, cwds: best.cwds };
+  return { envelope: best.envelope, cwds: best.cwds, checkoutRoot: best.checkoutRoot };
 }
 
 /**
@@ -438,7 +458,8 @@ function buildFindingFromEnvelope(
   envelope: NormalizedEnvelope | null,
   cwds: string[],
   cfg: Config,
-  cache: Map<string, string | null>,
+  cache: Map<string, RepoResolution | null>,
+  stampedCheckoutRoot: string | null = null,
 ): ReflectFinding {
   // --latest found no session for the repo → safe trip:false stub.
   if (envelope === null) {
@@ -456,11 +477,13 @@ function buildFindingFromEnvelope(
   // discovery; --transcript resolves here from cwds). Mirror runScan: try each
   // cwd in order, thread the cache. No resolvable cwd → degenerate stub.
   let repo = envelope.repo;
+  let checkoutRoot = stampedCheckoutRoot;
   if (repo === '') {
     for (const c of cwds) {
-      const r = resolveMainRepo(c, cache);
-      if (r !== null) {
-        repo = r;
+      const info = resolveRepo(c, cache);
+      if (info !== null) {
+        repo = info.repo;
+        checkoutRoot = info.checkoutRoot;
         break;
       }
     }
@@ -477,7 +500,7 @@ function buildFindingFromEnvelope(
   // → trip:false). Shared by --transcript and --latest, so both modes are covered.
   try {
     envelope.repo = repo;
-    relativizeEnvelopeFiles(envelope, repo);
+    relativizeEnvelopeFiles(envelope, repo, checkoutRoot);
     const { records } = runDetector([envelope], cfg, true);
     const record = records[0] ?? degenerateRecord(envelope);
     return buildReflectFinding({ record, zero_edit });

@@ -35,9 +35,9 @@ reuses the adapter and detector verbatim and only adds persistence.
 | --- | --- | --- |
 | `src/types.ts` | Shared type catalog. Field names/shapes are contracts pinned to the spec. | `NormalizedEvent`, `NormalizedEnvelope`, `SignalValues`, `StruggleRecord`, `AreaRow`, `JsonOutput`, `Config`, `Warnings`, `SignalName`, `ScoringMode`, `Severity`, `BaselinePath`, `BaselineState`, `BaselineAssessment`, `RepoFinding`, `ToolKind`, `EventKind`, `ReflectFinding`, `StopHookOutput`, `ReflectFrame`, `Cause`, `SessionEvidence`, `EvidenceRef`, `Diagnosis`, `CmdClass`, `FileClass` |
 | `src/config.ts` | Load + validate `.harnessgap.yml`; deep-merge over defaults; parse `--since` durations. | `loadConfig`, `parseDuration`, `DEFAULT_CONFIG`, `ConfigError` |
-| `src/git.ts` | Stat-based MAIN-repo resolver. Walks up from a cwd to the nearest directory `.git` (the main repo; worktrees only hold a `.git` file). No git invocation, no shell. Memoized by cwd. | `resolveMainRepo`, `walkToMainRepo` |
+| `src/git.ts` | Stat-based MAIN-repo resolver. Walks up from a cwd to the nearest directory `.git` (the main repo; worktrees only hold a `.git` file); also recovers SIBLING worktrees by scanning candidate siblings' `.git/worktrees/<name>/gitdir` registrations, returning the recovered checkout root alongside the repo. No git invocation, no shell. Memoized by cwd. | `resolveRepo`, `RepoResolution`, `resolveMainRepo`, `walkToRepo` |
 | `src/walk.ts` | Discover `.jsonl` transcripts under `<claudeDir>/projects/*/*.jsonl`. Rejects symlinks. | `discoverTranscripts`, `defaultClaudeDir` |
-| `src/relativize.ts` | Pure file-path relativization: strip the repo-root prefix, then collapse `<hidden>/worktrees/<name>/` prefixes so the same file across the main checkout and worktrees aggregates into one area. | `relativizeFilePath`, `stripWorktreePrefix`, `relativizeEnvelopeFiles` |
+| `src/relativize.ts` | Pure file-path relativization: strip the repo-root prefix, then collapse `<hidden>/worktrees/<name>/` prefixes so the same file across the main checkout and nested worktrees aggregates into one area; also strips a sibling-worktree checkout root (`worktreeCheckoutRoot`, passed by the resolver) so sibling-worktree files collapse onto the same repo-relative areas as the main checkout. | `relativizeFilePath`, `stripWorktreePrefix`, `relativizeEnvelopeFiles` |
 | `src/pipeline.ts` | Thin I/O shell: orchestrates walk → stream → resolve-main-repo → relativize → detect → aggregate → output. Also hosts `runReflect`, the n=1 session-end analog (see §10). | `runScan`, `ScanOptions`, `ScanResult`, `runReflect`, `ReflectOptions`, `ReflectResult` |
 | `src/cli.ts` | commander bin entry. Parses args, awaits `runScan`/`runReflect`/`initClaude`, writes stdout, exits. | `program` (`scan` default, `reflect`, `init` commands) |
 | `src/egress.ts` | §11 no-network guard: regexes for forbidden imports + `fetch()` calls. Single source of truth shared by the egress audit. | `FORBIDDEN_IMPORT`, `FORBIDDEN_FETCH_CALL`, `hasForbiddenImport`, `hasFetchCall`, `hasForbiddenEgress` |
@@ -84,16 +84,18 @@ reuses the adapter and detector verbatim and only adds persistence.
    `normalizeRecord` via `scrubCmd`/`scrubQuery`/`scrubFiles`), **parse**
    (`normalizeRecord`), and **stream** (`streamSession` + `mergeToolCalls`).
 4. **Repo resolve** — each distinct cwd is tried in turn through
-   `resolveMainRepo(cwd, cache)` (`src/git.ts`) until one resolves to a main
+   `resolveRepo(cwd, cache)` (`src/git.ts`) until one resolves to a main
    repo; the first success wins. `envelope.repo` is set to the MAIN repo root
    (so a project's main checkout + all worktrees share one repo value and
-   aggregate). Unresolved → `unresolvable_cwd++`, session skipped (counted
+   aggregate), recovering nested and SIBLING worktrees alike (see §8).
+   Unresolved → `unresolvable_cwd++`, session skipped (counted
    once — not double-counted under `skipped_sessions`). A single cache Map is
    threaded across all sessions.
-5. **Relativize** — `relativizeEnvelopeFiles(envelope, repo)` rewrites every
-   `input_digest.files` path to canonical repo-relative form (strip repo
-   prefix, then collapse worktree checkout prefixes). This is what makes area
-   keys real code areas instead of filesystem paths.
+5. **Relativize** — `relativizeEnvelopeFiles(envelope, repo, checkoutRoot)`
+   rewrites every `input_digest.files` path to canonical repo-relative form
+   (strip repo prefix, then collapse worktree checkout prefixes, and strip the
+   sibling-worktree checkout root when present). This is what makes area keys
+   real code areas instead of filesystem paths.
 6. **Filter** — by repo (`--repo` is itself normalized through
    `resolveMainRepo`, so `--repo <worktree>` or `<subdir>` matches the whole
    project), then `--since` (`started_at >= now − duration`), then `--limit`
@@ -299,23 +301,37 @@ carries only derived signal values and integer counts. Enforced by
 `test/privacy.test.ts` (malformed-prose and secret-shape fixtures through all
 three output modes).
 
-**Repo resolution (stat-based, no git invocation).** `resolveMainRepo`
-(`src/git.ts`) walks up from a session cwd, `stat`-ing `<ancestor>/.git`, and
-returns the first ancestor whose `.git` is a **directory** (the main-repo
-marker). A worktree checkout's `.git` is a *file* (gitfile), so the walk skips
+**Repo resolution (stat-based, no git invocation).** `resolveRepo`
+(`src/git.ts`, with `resolveMainRepo` a thin wrapper that returns just the repo)
+walks up from a session cwd, `stat`-ing `<ancestor>/.git`, and returns the first
+ancestor whose `.git` is a **directory** (the main-repo marker). A worktree checkout's `.git` is a *file* (gitfile), so the walk skips
 it and continues to the main repo — which means a project's main checkout and
 every worktree all resolve to the same main-repo root and aggregate together.
 The same walk recovers sessions whose cwd was a since-deleted worktree: the dir
 is gone but ancestor `.git` directories are `stat`-checked along the path string
-regardless, so the main repo is still found. Empty cwd → `null` (never falls
-back to the harness's own repo). This replaced an earlier sandboxed
-`git rev-parse --show-toplevel`, which returned the *worktree* root (excluding
-worktree sessions from `--repo <main>`) and failed outright for deleted cwds
-(dropping ~74% of sessions on a worktree-heavy repo). Stat-walk spawns no
-process at all, so the previous git-sandbox concerns (env vars, hooks,
-fsmonitor, shell history) are moot; `cwd` is untrusted and only `stat`'d, never
-read or executed. Never throws — returns `null` on missing cwd or no repo
-ancestor. `--repo` is normalized through the same resolver so
+regardless, so the main repo is still found. **Sibling worktrees** — a session
+whose cwd lived in a worktree whose checkout was a SIBLING of the main repo
+(not nested under it), the layout `git worktree add …` produces for a sibling
+clone — are recovered too: at each ancestor the resolver also scans SIBLING
+directories for a directory `.git` and reads that candidate's
+`.git/worktrees/<name>/gitdir`; if any registered worktree checkout path equals
+or is an ancestor of the cwd, that sibling is the main repo. This attributes
+sibling worktrees regardless of naming convention (no `-wt-` heuristic); without
+it, ~29% of sessions on a worktree-heavy repo were dropped as `unresolvable_cwd`.
+When this path fires, the resolver also returns the recovered sibling-worktree
+checkout root (as `RepoResolution.checkoutRoot`), which relativization strips so
+sibling-worktree files collapse onto the main checkout's repo-relative areas —
+without it they'd survive as absolute paths outside the repo prefix and fragment
+the leaderboard.
+Empty cwd → `null` (never falls back to the harness's own repo). This replaced
+an earlier sandboxed `git rev-parse --show-toplevel`, which returned the
+*worktree* root (excluding worktree sessions from `--repo <main>`) and failed
+outright for deleted cwds (dropping ~74% of sessions on a worktree-heavy repo).
+Stat-walk spawns no process at all, so the previous git-sandbox concerns (env
+vars, hooks, fsmonitor, shell history) are moot; `cwd` is untrusted and only
+`stat`'d / `readdir`'d, with only tiny `gitdir` text files read under candidate
+`.git/worktrees/`, never executed. Never throws — returns `null` on missing cwd
+or no repo ancestor. `--repo` is normalized through the same resolver so
 `--repo <worktree>` or `--repo <subdir>` matches the whole project.
 
 **Symlink rejection.** `discoverTranscripts` (`src/walk.ts:37`) never follows
@@ -598,7 +614,8 @@ following symlinks (mirrors `src/walk.ts`).
 `~/.claude/projects/*/*.jsonl` → **adapter** (scrub + parse + stream, merging
 `tool_use`+`tool_result` into one `tool_call` event so `tool` and `ok`
 co-occur) → **resolve main repo** (stat-walk to directory `.git`; no git
-invocation — unifies main + worktrees + deleted-worktree recovery) →
+invocation — unifies main + worktrees + deleted-worktree +
+sibling-worktree recovery) →
 **relativize** (repo-root prefix strip + worktree-prefix collapse, so areas are
 real code areas) → **detector** (7 pure signals + percentile-of-composites
 scoring with a bootstrap fallback for thin history + path-prefix area
