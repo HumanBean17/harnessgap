@@ -37,6 +37,7 @@ import { resolveMainRepo } from './git.js';
 import { relativizeEnvelopeFiles } from './relativize.js';
 import { runDetector } from './detector/index.js';
 import { aggregateAreas } from './aggregate/leaderboard.js';
+import { diagnoseUnits } from './diagnoser/index.js';
 import { buildJsonEnvelope } from './output/json.js';
 import { formatHuman } from './output/human.js';
 import { buildCalibrateObject, formatCalibrateTable } from './output/calibrate.js';
@@ -44,6 +45,7 @@ import { buildReflectFinding, formatStopHookOutput } from './output/hook.js';
 import type {
   BaselineAssessment,
   Config,
+  Diagnosis,
   NormalizedEnvelope,
   ReflectFinding,
   RepoFinding,
@@ -61,6 +63,13 @@ export interface ScanOptions {
   bootstrap?: boolean;
   configPath?: string;
   claudeDir?: string;
+  /**
+   * Slice 4 (Diagnoser): when true, collect per-session evidence in the detector
+   * and run `diagnoseUnits` to produce `result.diagnoses`. When unset/false, the
+   * detector skips evidence collection entirely and `result.diagnoses` is unset —
+   * output stays byte-identical to Slice 3.
+   */
+  diagnose?: boolean;
 }
 
 export interface ScanResult {
@@ -73,6 +82,13 @@ export interface ScanResult {
   finding: RepoFinding | null;
   /** Always-populated ambient baseline assessment. */
   baseline: BaselineAssessment;
+  /**
+   * Slice 4 (Diagnoser): one `Diagnosis` per flagged area. Populated ONLY under
+   * `--diagnose`; unset otherwise so default output stays byte-identical to
+   * Slice 3. Empty array when `--diagnose` is on but no areas are flagged, or
+   * when the filtered repo root is unresolved (diagnosis is skipped).
+   */
+  diagnoses?: Diagnosis[];
 }
 
 /**
@@ -173,9 +189,13 @@ export async function runScan(opts: ScanOptions): Promise<ScanResult> {
     filtered = filtered.slice(0, opts.limit);
   }
 
-  // 6. Run detector.
+  // 6. Run detector. Thread `collectEvidence` ONLY under --diagnose so the
+  //    default path skips evidence work entirely (keeps StruggleRecord.evidence
+  //    absent and scan output byte-identical to Slice 3).
   const forceBootstrap = opts.bootstrap ?? false;
-  const { records, finding, baseline } = runDetector(filtered, cfg, forceBootstrap);
+  const { records, finding, baseline } = runDetector(filtered, cfg, forceBootstrap, {
+    collectEvidence: opts.diagnose === true,
+  });
 
   // 7. Aggregate areas.
   const { rows, summary } = aggregateAreas(records, cfg);
@@ -186,6 +206,20 @@ export async function runScan(opts: ScanOptions): Promise<ScanResult> {
 
   // repo for output: the repo envelopes were filtered to (or "" if none).
   const outputRepo = filterRepo;
+
+  // 7b. Diagnose (Slice 4). Run ONLY under --diagnose; populate `diagnoses`
+  //     with one entry per flagged area (empty array when nothing is flagged).
+  //     `diagnoseUnits` never throws (per-unit fail-open), so no try/catch here.
+  //     When the filtered repo root is unresolved (`outputRepo === ''`), there
+  //     is no repo to ground doc-existence lookups in — skip diagnosis and emit
+  //     `[]` rather than running with an empty root.
+  //     Default path (no --diagnose): `diagnoses` stays undefined and is spread
+  //     into the result BELOW only when defined, so the default `ScanResult`
+  //     shape matches Slice 3 exactly (key absent, not just undefined).
+  let diagnoses: Diagnosis[] | undefined;
+  if (opts.diagnose === true) {
+    diagnoses = outputRepo !== '' ? diagnoseUnits(records, cfg, outputRepo) : [];
+  }
 
   // 9. Build output — branch by --calibrate / --json / human.
   let output: string;
@@ -209,6 +243,9 @@ export async function runScan(opts: ScanOptions): Promise<ScanResult> {
         sessions: records,
         areas: rows,
         repo_findings: finding ? [finding] : [],
+        // Spread only when defined so the default `--json` envelope has NO
+        // `diagnoses` key at all (byte-identical to Slice 3).
+        ...(diagnoses !== undefined ? { diagnoses } : {}),
       }),
     );
   } else {
@@ -221,9 +258,16 @@ export async function runScan(opts: ScanOptions): Promise<ScanResult> {
       warnings,
       baseline,
       finding,
+      // Spread only when defined so the default human table has no CAUSE
+      // column (byte-identical to Slice 3).
+      ...(diagnoses !== undefined ? { diagnoses } : {}),
     });
   }
 
+  // Spread `diagnoses` only when defined so the default-path `ScanResult` shape
+  // matches Slice 3 exactly (key absent rather than `undefined`). When
+  // `--diagnose` is on, the key is present — empty `[]` when nothing was flagged
+  // or the repo root was unresolved.
   return {
     output,
     mode,
@@ -232,6 +276,7 @@ export async function runScan(opts: ScanOptions): Promise<ScanResult> {
     exitCode: 0,
     finding,
     baseline,
+    ...(diagnoses !== undefined ? { diagnoses } : {}),
   };
 }
 

@@ -7,7 +7,19 @@ import { execFileSync } from 'node:child_process';
 import { runScan } from '../src/pipeline.js';
 import { runDetector } from '../src/detector/index.js';
 import { DEFAULT_CONFIG } from '../src/config.js';
-import type { JsonOutput, NormalizedEnvelope, NormalizedEvent } from '../src/types.js';
+import {
+  setupTempRepo,
+  writeTranscript,
+  mkSession,
+  cleanupTempDirs,
+} from './helpers/builder.js';
+import { corpusSlug, corpusSessions } from './fixtures/corpus/sessions.js';
+import type {
+  Diagnosis,
+  JsonOutput,
+  NormalizedEnvelope,
+  NormalizedEvent,
+} from '../src/types.js';
 
 // Pipeline orchestration tests: build a real temp claudeDir + temp git repo,
 // write real .jsonl transcripts, and exercise runScan end-to-end. No mocking —
@@ -33,6 +45,9 @@ afterEach(() => {
     const dir = tmpDirs.pop()!;
     rmSync(dir, { recursive: true, force: true });
   }
+  // Also clear dirs tracked by the shared builder helper (used by the corpus
+  // fixture in the diagnose tests below).
+  cleanupTempDirs();
 });
 
 // --- Transcript record builders (valid Claude Code JSONL shapes) ---
@@ -228,6 +243,123 @@ describe('runScan (pipeline orchestration)', () => {
     expect(parsed).not.toHaveProperty('schema_version');
     expect(parsed).not.toHaveProperty('sessions');
     expect(parsed).not.toHaveProperty('areas');
+  });
+
+  // --- Task 9: --diagnose wiring (byte-identical default) ---
+  //
+  // The load-bearing invariant: turning --diagnose OFF must produce output that
+  // is byte-identical to Slice 3 (no `diagnoses` field on the result, no
+  // `.evidence` on records, no change to the human/json/calibrate branches).
+  // Turning --diagnose ON populates `result.diagnoses` (an array, possibly empty)
+  // and threads `.evidence` through records. The default path is what the
+  // snapshot test guards — these tests assert the wiring at the pipeline layer.
+
+  it('8. diagnose:true → result.diagnoses is an array of Diagnosis shape (corpus has flagged areas)', async () => {
+    const { repo, claudeDir } = setupTempRepo();
+    for (const spec of corpusSessions) {
+      writeTranscript(claudeDir, corpusSlug, spec.name, mkSession(repo, spec));
+    }
+
+    const result = await runScan({ repo, claudeDir, diagnose: true });
+
+    // diagnoses is always an array when diagnose is on (even if no units were
+    // flagged — empty `[]` is the contract for "nothing to explain").
+    expect(Array.isArray(result.diagnoses)).toBe(true);
+
+    // The corpus has flagged areas (snapshot shows 7 flagged), so we expect a
+    // non-empty diagnosis set. Each item must match the Diagnosis shape.
+    expect(result.diagnoses.length).toBeGreaterThan(0);
+    for (const d of result.diagnoses as Diagnosis[]) {
+      expect(d.unit).toEqual({ kind: 'area', key: expect.any(String) });
+      expect(typeof d.cause).toBe('string');
+      expect(typeof d.confidence).toBe('number');
+      expect(d.confidence).toBeGreaterThanOrEqual(0);
+      expect(d.confidence).toBeLessThanOrEqual(1);
+      expect(typeof d.rationale).toBe('string');
+      expect(Array.isArray(d.evidence_refs)).toBe(true);
+    }
+    // Diagnoses are sorted by unit.key ascending (diagnoseUnits contract).
+    const keys = (result.diagnoses as Diagnosis[]).map((d) => d.unit.key);
+    const sorted = [...keys].sort();
+    expect(keys).toEqual(sorted);
+  });
+
+  it('9. no diagnose → result.diagnoses===undefined AND output byte-identical to diagnose:false', async () => {
+    const { repo, claudeDir } = setupFixture();
+
+    const withoutOpt = await runScan({ repo, claudeDir });
+    const withFalse = await runScan({ repo, claudeDir, diagnose: false });
+
+    // `diagnoses` is unset on the result when diagnose is not true — both the
+    // value is undefined AND the key is absent from the result object (matches
+    // the Slice-3 ScanResult shape exactly).
+    expect(withoutOpt.diagnoses).toBeUndefined();
+    expect(withFalse.diagnoses).toBeUndefined();
+    expect(withoutOpt).not.toHaveProperty('diagnoses');
+    expect(withFalse).not.toHaveProperty('diagnoses');
+
+    // Byte-identical output between "no opt" and "diagnose:false" — the default
+    // path is unchanged by the wiring. (Cross-check against the snapshot test,
+    // which pins the actual Slice-3 string.)
+    expect(withoutOpt.output).toBe(withFalse.output);
+    expect(withoutOpt.mode).toBe(withFalse.mode);
+    expect(withoutOpt.sessionCount).toBe(withFalse.sessionCount);
+    expect(withoutOpt.warnings).toEqual(withFalse.warnings);
+
+    // Also assert the corpus default-path output is byte-identical to Slice 3
+    // (the cause column exists ONLY under `--diagnose`). The default output
+    // has NO CAUSE column; turning `--diagnose` on surfaces a CAUSE column.
+    const corpusRepo = setupTempRepo();
+    for (const spec of corpusSessions) {
+      writeTranscript(corpusRepo.claudeDir, corpusSlug, spec.name, mkSession(corpusRepo.repo, spec));
+    }
+    const corpusOff = await runScan({ repo: corpusRepo.repo, claudeDir: corpusRepo.claudeDir });
+    const corpusOn = await runScan({
+      repo: corpusRepo.repo,
+      claudeDir: corpusRepo.claudeDir,
+      diagnose: true,
+    });
+    // Default path: NO CAUSE column (byte-identical to Slice 3).
+    expect(corpusOff.output).not.toContain('CAUSE');
+    // --diagnose on (with flagged areas in the corpus): CAUSE column present.
+    expect(corpusOn.output).toContain('CAUSE');
+    // The two outputs differ — the cause column is the opt-in surface.
+    expect(corpusOn.output).not.toBe(corpusOff.output);
+  });
+
+  it('10. records carry .evidence ONLY when diagnose is true (verified via --json sessions)', async () => {
+    const { repo, claudeDir } = setupTempRepo();
+    for (const spec of corpusSessions) {
+      writeTranscript(claudeDir, corpusSlug, spec.name, mkSession(repo, spec));
+    }
+
+    // diagnose ON → every session record carries `.evidence`.
+    const onResult = await runScan({ repo, claudeDir, diagnose: true, json: true });
+    const onJson = JSON.parse(onResult.output) as JsonOutput;
+    expect(onJson.sessions.length).toBeGreaterThan(0);
+    for (const s of onJson.sessions) {
+      expect(s.evidence).toBeDefined();
+      expect(typeof s.evidence).toBe('object');
+      expect(s.evidence!.failures).toEqual({
+        config: expect.any(Number),
+        test: expect.any(Number),
+        build: expect.any(Number),
+        other: expect.any(Number),
+      });
+      expect(s.evidence!.edit_kinds).toEqual({
+        test: expect.any(Number),
+        code: expect.any(Number),
+        other: expect.any(Number),
+      });
+    }
+
+    // diagnose OFF (no opt) → no session record carries `.evidence`.
+    const offResult = await runScan({ repo, claudeDir, json: true });
+    const offJson = JSON.parse(offResult.output) as JsonOutput;
+    expect(offJson.sessions.length).toBeGreaterThan(0);
+    for (const s of offJson.sessions) {
+      expect(s.evidence).toBeUndefined();
+    }
   });
 });
 

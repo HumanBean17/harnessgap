@@ -322,3 +322,170 @@ describe('privacy (d): baseline/finding surfaces carry no prose', () => {
     }
   });
 });
+
+// --- (e) Diagnoser leaves carry no prose (Slice 4 privacy guard) ---
+//
+// Sections (a)-(d) cover every DEFAULT output surface. Slice 4 adds a new
+// surface — the `diagnoses` array (`--diagnose` / `runScan({ diagnose: true })`)
+// — with two string-bearing leaf kinds: `Diagnosis.rationale` and the
+// string-valued fields of every `EvidenceRef` member (`doc_absent.checked[]`,
+// `doc_present.path`). This section forces a real Diagnosis to fire (not
+// vacuously prose-free because nothing was produced) with the prose marker
+// seeded in every event type a leak could originate from (user_text, exec cmd,
+// edited file path), then asserts the marker is absent from every leaf and
+// every leaf is a primitive / enum / closed-union literal — never an
+// arbitrary transcript string. classify.ts (Task 7) emits derived-only values
+// by construction; this test PROVES it.
+
+describe('privacy (e): diagnosis leaves carry no prose', () => {
+  it('rationale + every evidence_refs string field stays prose-free (cause=doc)', async () => {
+    const DIAG_PROSE_MARKER = 'DGN_PROSE_LEAF_MARKER_x9k';
+
+    const { repo, claudeDir } = setupTempRepo();
+    const slug = 'diagnose-prose-slug';
+
+    // Fixture: ONE flagged session in src/billing whose signature trips the
+    // `doc` cause (3/5 signature signals elevated → score 0.6 ≥ 0.5
+    // confidence_floor; doc absent → doc wins). Marker is seeded in:
+    //   - 2 user_text "correction" messages (leak vector: someone adds
+    //     "rationale quotes the last user msg" in classify.ts).
+    //   - 1 failing exec cmd (leak vector: someone adds "rationale cites the
+    //     failing command" in classify.ts or "failure_profile.cmd" field).
+    //   - the marker-named file in 1 read (leak vector: someone cites the
+    //     edited/read path inside rationale or a new evidence leaf).
+    // explore_ratio = 31 reads / 3 edited lines ≈ 10.3 (≥ 10 threshold → elevated).
+    // (30 from the 6×5 loop just below + 1 marker read appended after.)
+    // reread = 6 distinct files each read ≥5 times (≥ 5 → elevated).
+    // corrections = 2 (≥ 2 → elevated). No docs/ created → docExists=false.
+    const readFiles = Array.from({ length: 6 }, (_, i) => `src/billing/f${i}.ts`);
+    const events: EventSpec[] = [];
+    // 6 files × 5 reads = 30 reads; the marker read below brings the total to
+    // 31 (reread=6 — the marker file is read only once, so it isn't counted;
+    // explore_ratio numerator=31).
+    for (const f of readFiles) {
+      for (let i = 0; i < 5; i++) events.push({ kind: 'read', file: f });
+    }
+    // Plant the marker in one read file path (path-as-prose leak vector).
+    events.push({ kind: 'read', file: `src/billing/${DIAG_PROSE_MARKER}.ts` });
+    // First edit (1 line) — keeps explore_ratio denominator low.
+    events.push({ kind: 'edit', file: 'src/billing/f0.ts', newString: 'y' });
+    // Correction #1 with marker seeded in user_text.
+    events.push({ kind: 'user_text', text: `no, that is wrong ${DIAG_PROSE_MARKER}` });
+    // Second edit (1 line).
+    events.push({ kind: 'edit', file: 'src/billing/f0.ts', newString: 'z' });
+    // Correction #2 with marker seeded in user_text.
+    events.push({ kind: 'user_text', text: `wait, ${DIAG_PROSE_MARKER}, try differently` });
+    // Third edit (1 line). Total edited lines = 3 → explore_ratio = 30/3 = 10.
+    events.push({ kind: 'edit', file: 'src/billing/f0.ts', newString: 'w' });
+    // Failing exec with marker seeded in cmd (counts as failure_kind 'other'
+    // → evidence.failures.other += 1, but the cmd string is dropped by the
+    // adapter; leak vector if classify.ts ever cited it).
+    events.push({ kind: 'exec', cmd: `echo ${DIAG_PROSE_MARKER}`, ok: false });
+
+    writeTranscript(claudeDir, slug, 's', mkSession(repo, { name: 's', events }));
+
+    // --- Run --diagnose --json and parse ---
+    const result = await runScan({ repo, claudeDir, diagnose: true, json: true });
+    const parsed = JSON.parse(result.output) as JsonOutput;
+
+    // Load-bearing: at least one Diagnosis was produced (else the leaf checks
+    // below are vacuously satisfied and prove nothing).
+    expect(
+      parsed.diagnoses,
+      '--diagnose must populate the diagnoses array',
+    ).toBeDefined();
+    expect(
+      parsed.diagnoses!.length,
+      'expected at least one diagnosis from the flagged src/billing area',
+    ).toBeGreaterThanOrEqual(1);
+
+    // The src/billing diagnosis specifically (the area we shaped to fire).
+    const dx = parsed.diagnoses!.find((d) => d.unit.key === 'src/billing');
+    expect(dx, 'expected a src/billing diagnosis').toBeDefined();
+
+    // --- (1) Marker absent from rationale (the only plain string on Diagnosis) ---
+    expect(
+      dx!.rationale.includes(DIAG_PROSE_MARKER),
+      'prose marker leaked into Diagnosis.rationale',
+    ).toBe(false);
+
+    // --- (2) Marker absent from every evidence_refs string-valued leaf ---
+    for (const ref of dx!.evidence_refs) {
+      // Stringify catches any leaf (string fields, nested arrays, etc.) without
+      // needing per-kind enumeration; if the marker is anywhere in the ref, fail.
+      expect(
+        JSON.stringify(ref).includes(DIAG_PROSE_MARKER),
+        `prose marker leaked into evidence_refs member: ${JSON.stringify(ref)}`,
+      ).toBe(false);
+    }
+
+    // --- (3) Every leaf is a primitive / enum / closed-union literal ---
+    // No arbitrary transcript strings: `rationale` is the only free-form string
+    // and it is derived-only (clause names + numeric medians + cfg.docs_dirs
+    // entries). evidence_refs members MUST match the closed EvidenceRef union
+    // with primitive payloads.
+    expect(typeof dx!.rationale).toBe('string');
+    expect(typeof dx!.confidence).toBe('number');
+    expect(dx!.confidence).toBeGreaterThanOrEqual(0);
+    expect(dx!.confidence).toBeLessThanOrEqual(1);
+    expect(['doc', 'config-doc', 'test-gap', 'refactor-flag', 'inherent-complexity', 'unclassified'])
+      .toContain(dx!.cause);
+    expect(dx!.unit.kind).toBe('area');
+
+    const SIGNAL_NAMES = [
+      'explore_ratio', 'reread', 'failure_streak', 'corrections',
+      'abandonment', 'oscillation', 'wall_clock_per_line',
+    ] as const;
+    const CAUSE_LITERALS = ['signal', 'doc_absent', 'doc_present', 'failure_profile', 'edit_profile'] as const;
+
+    for (const ref of dx!.evidence_refs) {
+      expect(CAUSE_LITERALS).toContain(ref.kind);
+      switch (ref.kind) {
+        case 'signal':
+          expect(SIGNAL_NAMES).toContain(ref.name);
+          expect(['number', 'boolean']).toContain(typeof ref.value);
+          break;
+        case 'doc_absent':
+          expect(Array.isArray(ref.checked)).toBe(true);
+          for (const c of ref.checked) expect(typeof c).toBe('string');
+          break;
+        case 'doc_present':
+          expect(typeof ref.path).toBe('string');
+          break;
+        case 'failure_profile':
+          expect(typeof ref.config).toBe('number');
+          expect(typeof ref.test).toBe('number');
+          expect(typeof ref.build).toBe('number');
+          expect(typeof ref.other).toBe('number');
+          break;
+        case 'edit_profile':
+          expect(typeof ref.test).toBe('number');
+          expect(typeof ref.code).toBe('number');
+          expect(typeof ref.other).toBe('number');
+          break;
+      }
+    }
+
+    // --- (4) Specifically: a doc_absent ref must be present (we created no
+    // docs/) and its `checked` must list only cfg.docs_dirs entries, NOT
+    // transcript-derived paths. This is the only EvidenceRef string array —
+    // pinning it to cfg.docs_dirs literals proves the marker (seeded in a
+    // read file path) cannot reach it. ---
+    const docAbsent = dx!.evidence_refs.find((r) => r.kind === 'doc_absent');
+    expect(docAbsent, 'expected doc_absent evidence (no docs/ created)').toBeDefined();
+    if (docAbsent!.kind === 'doc_absent') {
+      // cfg.docs_dirs defaults to ['docs'] — every checked entry must be one.
+      for (const c of docAbsent!.checked) {
+        expect(c, `doc_absent.checked entry "${c}" is not a cfg.docs_dirs literal`).toBe('docs');
+      }
+    }
+
+    // --- (5) Marker must not appear ANYWHERE in the serialized diagnoses ---
+    // (catch-all: if a future field is added to Diagnosis and forgets the
+    // leaf check, this still fires.)
+    expect(
+      JSON.stringify(parsed.diagnoses).includes(DIAG_PROSE_MARKER),
+      'prose marker found somewhere in serialized diagnoses',
+    ).toBe(false);
+  });
+});

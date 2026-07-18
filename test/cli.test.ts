@@ -228,4 +228,61 @@ describe('harnessgap CLI (spawn-based)', () => {
     expect(stdout).toContain('Usage:');
     expect(stdout).toContain('scan');
   });
+
+  // Slice 4 (Diagnoser) — Task 10 + Task 11: --diagnose flag is parsed and
+  // threaded into runScan, and the JSON envelope carries a `diagnoses` array
+  // (Task 11 wired JsonOutput.diagnoses into buildJsonEnvelope). Here we assert
+  // what's true for the corpus fixture: the flag is accepted (exit 0, no
+  // unknown-option error), the envelope is valid, and `diagnoses` is present
+  // as an array (it may be empty for this thin corpus — that's fine, so we
+  // assert defined + Array.isArray, not a specific length). Byte-identical
+  // default (no --diagnose ⇒ JSON has no `diagnoses` key) is covered by test 8.
+
+  it('7. scan --diagnose --json over corpus → exits 0, flag accepted, diagnoses array present', async () => {
+    const { repo, claudeDir } = setupFixture();
+    const { stdout, stderr, code } = await runCli([
+      'scan',
+      '--repo',
+      repo,
+      '--claude-dir',
+      claudeDir,
+      '--diagnose',
+      '--json',
+    ]);
+
+    expect(code).toBe(0);
+    expect(stderr).toBe('');
+    const parsed = JSON.parse(stdout) as JsonOutput;
+    expect(parsed.schema_version).toBe(1);
+    expect(parsed.session_count).toBe(2);
+    // Task 11: the envelope carries a `diagnoses` array. The corpus is thin
+    // (≤1 session per area, scores below floor), so it may be empty — assert
+    // shape only, not length.
+    expect(parsed.diagnoses).toBeDefined();
+    expect(Array.isArray(parsed.diagnoses)).toBe(true);
+  });
+
+  it('8. scan --json (no --diagnose) → JSON has no `diagnoses` key (byte-identical default)', async () => {
+    const { repo, claudeDir } = setupFixture();
+    const { stdout, code } = await runCli([
+      'scan',
+      '--repo',
+      repo,
+      '--claude-dir',
+      claudeDir,
+      '--json',
+    ]);
+
+    expect(code).toBe(0);
+    const parsed = JSON.parse(stdout) as JsonOutput;
+    expect(parsed).not.toHaveProperty('diagnoses');
+  });
+
+  it('9. scan --help → lists --diagnose with its description', async () => {
+    const { stdout, code } = await runCli(['scan', '--help']);
+
+    expect(code).toBe(0);
+    expect(stdout).toContain('--diagnose');
+    expect(stdout).toContain('Classify each flagged area into a typed cause');
+  });
 });

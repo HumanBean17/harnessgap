@@ -119,6 +119,9 @@ export interface StruggleRecord {
   event_count: number;
   areas: { key: string; weight: number }[];
   signals: SignalValues;
+  // Slice 4 (Diagnoser): populated only under `--diagnose`; absent otherwise
+  // so default output stays byte-identical.
+  evidence?: SessionEvidence;
 }
 
 export interface Warnings {
@@ -147,6 +150,9 @@ export interface JsonOutput {
   sessions: StruggleRecord[];
   areas: AreaRow[];
   repo_findings: RepoFinding[];
+  // Slice 4 (Diagnoser): emitted only under `--diagnose`; absent otherwise so
+  // default output stays byte-identical.
+  diagnoses?: Diagnosis[];
 }
 
 export interface Config {
@@ -185,6 +191,78 @@ export interface Config {
     suppress_abandonment_when_no_exec: boolean;
     test_cmd_patterns: string[];
   };
+  // Slice 4 (Diagnoser) config. `docs_dirs` is the list of repo-relative
+  // paths searched for doc-existence grounding; `diagnose` holds the rule
+  // floors used by the classifier (§5.4, §6).
+  docs_dirs: string[];
+  diagnose: {
+    confidence_floor: number;
+    config_share_floor: number;
+    test_share_floor: number;
+    code_share_floor: number;
+    score_floor: number;
+  };
+}
+
+// Diagnoser (Slice 4) foundation types. Field names are contracts pinned to
+// the §5 design spec; later tasks import these verbatim. Populated only under
+// `scan --diagnose`; absent otherwise so default output stays byte-identical.
+
+/** Failed-exec bucket key (cmd-class) used by `SessionEvidence.failures`. */
+export type CmdClass = 'config' | 'test' | 'build' | 'other';
+
+/** Edited-file bucket key (file-class) used by `SessionEvidence.edit_kinds`. */
+export type FileClass = 'test' | 'code' | 'other';
+
+/** The closed cause taxonomy emitted by the Diagnoser rule engine (§6). */
+export type Cause =
+  | 'doc'
+  | 'config-doc'
+  | 'test-gap'
+  | 'refactor-flag'
+  | 'inherent-complexity'
+  | 'unclassified';
+
+/**
+ * Failed-exec counts by cmd-class and edited-file counts by file-class.
+ * Computed in the detector alongside the signals; populated only under
+ * `--diagnose`. Counts are integers; scrubbing and size caps are reused
+ * (cmds/files are already scrubbed/capped in the adapter).
+ */
+export interface SessionEvidence {
+  failures: { config: number; test: number; build: number; other: number };
+  edit_kinds: { test: number; code: number; other: number };
+}
+
+/**
+ * Closed union of evidence pointers a `Diagnosis` may cite (§5.2). Every leaf
+ * is derived-only — signal values, integer counts, ratios, doc paths — never
+ * transcript prose, file bodies, or commands.
+ */
+export type EvidenceRef =
+  | { kind: 'signal'; name: SignalName; value: number | boolean }
+  | { kind: 'doc_absent'; checked: string[] }
+  | { kind: 'doc_present'; path: string }
+  | {
+      kind: 'failure_profile';
+      config: number;
+      test: number;
+      build: number;
+      other: number;
+    }
+  | { kind: 'edit_profile'; test: number; code: number; other: number };
+
+/**
+ * One Diagnoser output per flagged area (§5.2). `unit.kind` is `'area'` for
+ * the v1 batch classifier; `confidence` is in [0,1]; `rationale` and every
+ * `evidence_refs` leaf are derived-only.
+ */
+export interface Diagnosis {
+  unit: { kind: 'area'; key: string };
+  cause: Cause;
+  confidence: number;
+  rationale: string;
+  evidence_refs: EvidenceRef[];
 }
 
 /**

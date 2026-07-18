@@ -6,6 +6,7 @@ import * as os from 'node:os';
 import type {
   AreaRow,
   BaselineAssessment,
+  Diagnosis,
   RepoFinding,
   ScoringMode,
   Warnings,
@@ -23,12 +24,21 @@ interface HumanInput {
   baseline: BaselineAssessment;
   /** Ambient repo-level finding — non-null only when `baseline.state === 'elevated'`. */
   finding: RepoFinding | null;
+  /**
+   * Diagnoser output (Slice 4). When `undefined` or empty, the table is
+   * byte-identical to Slice 3 (no CAUSE column). When non-empty, an extra
+   * `CAUSE` column renders on each flagged row showing `cause(confidence)`
+   * — e.g. `doc(0.78)`; unmatched or `unclassified` rows render `-`.
+   */
+  diagnoses?: Diagnosis[];
 }
 
 // Fixed column widths for the leaderboard table.
 const AREA_W = 32;
 const FLAGGED_W = 8;
 const MEAN_W = 11;
+// Wide enough for the longest cause (`inherent-complexity`) + `(0.99)` = 25.
+const CAUSE_W = 25;
 
 // Fixed canonical order + human labels for the warnings line. Zero-count
 // categories are omitted from the output.
@@ -55,7 +65,8 @@ const WARNING_PARTS: ReadonlyArray<{ key: keyof Warnings; label: string }> = [
  * interpretation string. No session content, no file paths.
  */
 export function formatHuman(input: HumanInput): string {
-  const { repo, mode, sessionCount, areas, summary, warnings, baseline, finding } = input;
+  const { repo, mode, sessionCount, areas, summary, warnings, baseline, finding, diagnoses } =
+    input;
   const lines: string[] = [];
 
   lines.push(
@@ -69,6 +80,11 @@ export function formatHuman(input: HumanInput): string {
   // Blank line separates the baseline section from the area table.
   lines.push('');
 
+  // CAUSE column renders ONLY when the Diagnoser produced at least one
+  // diagnosis (`--diagnose` on + flagged areas). When `diagnoses` is
+  // undefined or empty, the table is byte-identical to Slice 3.
+  const hasCause = diagnoses !== undefined && diagnoses.length > 0;
+
   // Only FLAGGED areas get table rows (spec §8). Unflagged areas are noise;
   // the summary line reports their count. When nothing is flagged, print a
   // clear no-flagged-areas line instead of an empty table.
@@ -76,9 +92,9 @@ export function formatHuman(input: HumanInput): string {
   if (flaggedAreas.length === 0) {
     lines.push('No flagged areas.');
   } else {
-    lines.push(tableHeader());
+    lines.push(tableHeader(hasCause));
     for (const area of flaggedAreas) {
-      lines.push(tableRow(area));
+      lines.push(tableRow(area, hasCause ? (diagnoses as Diagnosis[]) : []));
     }
   }
 
@@ -148,17 +164,34 @@ function baselineLines(baseline: BaselineAssessment, finding: RepoFinding | null
 }
 
 /** The column-header row, aligned to match the data rows. */
-function tableHeader(): string {
-  return `${'AREA'.padEnd(AREA_W)} | ${'FLAGGED'.padStart(FLAGGED_W)} | ${'MEAN SCORE'.padStart(MEAN_W)} | TOP SIGNALS`;
+function tableHeader(hasCause: boolean): string {
+  const base = `${'AREA'.padEnd(AREA_W)} | ${'FLAGGED'.padStart(FLAGGED_W)} | ${'MEAN SCORE'.padStart(MEAN_W)}`;
+  if (!hasCause) return `${base} | TOP SIGNALS`;
+  return `${base} | ${'CAUSE'.padStart(CAUSE_W)} | TOP SIGNALS`;
 }
 
-/** One area row, column-aligned. */
-function tableRow(area: AreaRow): string {
+/** One area row, column-aligned. `diagnoses` is `[]` when the cause column is off. */
+function tableRow(area: AreaRow, diagnoses: Diagnosis[]): string {
   const areaCol = fit(area.key, AREA_W);
   const flaggedCol = String(area.sessions_flagged).padStart(FLAGGED_W);
   const meanCol = area.mean_score.toFixed(1).padStart(MEAN_W);
   const signalsCol = area.top_signals.map((t) => t.display).join(', ');
-  return `${areaCol} | ${flaggedCol} | ${meanCol} | ${signalsCol}`;
+  if (diagnoses.length === 0) {
+    return `${areaCol} | ${flaggedCol} | ${meanCol} | ${signalsCol}`;
+  }
+  const causeCol = causeCell(area.key, diagnoses).padStart(CAUSE_W);
+  return `${areaCol} | ${flaggedCol} | ${meanCol} | ${causeCol} | ${signalsCol}`;
+}
+
+/**
+ * Render the cause cell for a flagged area: `cause(confidence)` (confidence to
+ * 2 decimals) when a matching diagnosis exists with a non-`unclassified`
+ * cause; `-` otherwise. Matched by `diagnosis.unit.key === areaKey`.
+ */
+function causeCell(areaKey: string, diagnoses: Diagnosis[]): string {
+  const d = diagnoses.find((x) => x.unit.key === areaKey);
+  if (d === undefined || d.cause === 'unclassified') return '-';
+  return `${d.cause}(${d.confidence.toFixed(2)})`;
 }
 
 /**
