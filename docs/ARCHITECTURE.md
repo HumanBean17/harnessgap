@@ -45,7 +45,7 @@ reuses the adapter and detector verbatim and only adds persistence.
 | `src/adapter/taxonomy.ts` | Claude Code tool-name → `ToolKind` map. | `mapToolKind` |
 | `src/adapter/parse.ts` | Per-record normalizer: one parsed JSONL record → one `NormalizedEvent` (or null). Scrubbing + correction flag applied here. | `normalizeRecord` |
 | `src/adapter/stream.ts` | Streaming JSONL reader (the only adapter I/O). Size caps, `mergeToolCalls`, envelope assembly. | `streamSession` |
-| `src/adapter/correction.ts` | Content-based correction detector: classifies a user message as a course-correction. Emits `{matched, shape}` only — never raw text. | `detectCorrection` |
+| `src/adapter/correction.ts` | Content-based correction detector: classifies a user message as a course-correction over an additive per-language keyword catalog (EN+RU, Cyrillic-normalized). Emits `{matched, shape}` only — never raw text. | `detectCorrection` |
 | `src/detector/signals.ts` | Pure signal computation: 7 signals from a normalized event stream. | `computeSignals` |
 | `src/detector/scoring.ts` | Pure scorer: percentile-of-composites and bootstrap modes. | `scoreSessions` |
 | `src/detector/areas.ts` | Pure area localization: path-prefix clustering, deepest-pruning. | `localizeAreas` |

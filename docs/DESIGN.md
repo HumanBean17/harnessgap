@@ -147,7 +147,7 @@ stage. Signals per session (additions in v0.2 marked **new**):
 - **Exploration ratio** — `search+read+list` calls before the first `edit`; explore-calls per edited line.
 - **Re-reads / re-greps** — same file read N≥3 times, or similar search patterns repeated (normalized-query Jaccard similarity).
 - **Failure streaks** — consecutive non-zero-exit `exec` calls; same-command retries.
-- **User corrections** — user messages matching correction shapes ("no,", "that's wrong", "actually", "не туда", interrupt events), especially shortly after assistant actions.
+- **User corrections** — user messages matching correction shapes ("no,", "that's wrong", "actually", "не туда", interrupt events), especially shortly after assistant actions. The keyword catalog is **EN+RU** (additive per-language table with Cyrillic normalization — `ё`→`е`, punctuation ignored); other languages can be added as catalog-only entries.
 - **Context thrash** — compaction events (`PreCompact` count); token burn vs. diff size.
 - **Abandonment** — session ends with an explore-heavy tail and no edits.
 - **Oscillation / loops** *(new)* — `edit → test-fail → revert → edit-differently → fail` cycles;

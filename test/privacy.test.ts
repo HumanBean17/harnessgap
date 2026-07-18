@@ -489,3 +489,68 @@ describe('privacy (e): diagnosis leaves carry no prose', () => {
     ).toBe(false);
   });
 });
+
+// --- (f) Russian correction prose does not leak (issue #6 privacy guard) ---
+//
+// The corrections signal now ingests Russian user messages (token catalog +
+// Cyrillic normalization). This adds a new transcript-prose path through the
+// detector. This section seeds Russian correction prose (with a unique Latin
+// marker + a Russian word) in the two leak vectors a correction-aware change
+// could open — user_text (the correction channel) and an exec cmd — then
+// asserts neither the marker nor the Russian word reaches any output mode or
+// the warnings object. Mirrors section (b)'s shape, scoped to RU prose.
+
+describe('privacy (f): Russian correction prose does not leak', () => {
+  it('RU marker + Russian word absent from human, json, calibrate, warnings', async () => {
+    const RU_MARKER = 'RU_PROSE_LEAK_MARKER_7kx';
+    const RU_WORD = 'секретный'; // Russian adjective ("secret") — must not leak
+    const { repo, claudeDir } = setupTempRepo();
+
+    // A session with a Russian course-correction that carries the marker +
+    // RU_WORD in user_text, plus an exec cmd echoing the marker. The
+    // correction itself (нет, …) sets the correction flag; the prose is
+    // consumed by detectCorrection and discarded.
+    const events: EventSpec[] = [
+      { kind: 'edit', file: 'src/app/a.ts', newString: 'y' },
+      {
+        kind: 'user_text',
+        text: `нет, это ${RU_WORD} маркер ${RU_MARKER}, не то`,
+      },
+      { kind: 'exec', cmd: `echo ${RU_MARKER}` },
+    ];
+    writeTranscript(claudeDir, 'ru-prose-slug', 'ru', mkSession(repo, { name: 'ru', events }));
+
+    // Every output mode.
+    for (const { label, opts } of [
+      { label: 'human', opts: {} },
+      { label: 'json', opts: { json: true } },
+      { label: 'calibrate', opts: { calibrate: true } },
+    ] as const) {
+      const result = await runScan({ repo, claudeDir, ...opts });
+      expect(
+        result.output.includes(RU_MARKER),
+        `${label}: RU marker leaked into output`,
+      ).toBe(false);
+      expect(
+        result.output.includes(RU_WORD),
+        `${label}: Russian word leaked into output`,
+      ).toBe(false);
+    }
+
+    // Warnings object (stringified) carries neither.
+    const jsonResult = await runScan({ repo, claudeDir, json: true });
+    const warningsStr = JSON.stringify(jsonResult.warnings);
+    expect(warningsStr.includes(RU_MARKER)).toBe(false);
+    expect(warningsStr.includes(RU_WORD)).toBe(false);
+
+    // Load-bearing: the Russian correction must actually have been ingested,
+    // detected, and counted — otherwise the non-leak claims above are vacuous
+    // (they'd pass if the adapter silently dropped the user_text). The «нет, …»
+    // message sets the correction flag, so this session's corrections >= 1.
+    const parsed = JSON.parse(jsonResult.output) as JsonOutput;
+    expect(
+      parsed.sessions[0]?.signals.corrections ?? 0,
+      'RU correction was not detected — non-leak assertions above are vacuous',
+    ).toBeGreaterThanOrEqual(1);
+  });
+});
