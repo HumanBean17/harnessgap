@@ -13,8 +13,8 @@ import { mkdtempSync, mkdirSync, writeFileSync, rmSync, realpathSync } from 'nod
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { execFileSync } from 'node:child_process';
-import { runScan } from '../src/pipeline.js';
-import type { JsonOutput } from '../src/types.js';
+import { runScan, runReflect } from '../src/pipeline.js';
+import type { JsonOutput, ReflectFinding } from '../src/types.js';
 
 const tmpDirs: string[] = [];
 
@@ -94,6 +94,28 @@ function setup(): { repo: string; claudeDir: string } {
   const repo = realpathSync(repoDir);
   const claudeDir = makeTempDir('claude');
   return { repo, claudeDir };
+}
+
+/**
+ * git-init a repo WITH a commit (needed for `git worktree add`), then add a real
+ * SIBLING worktree checkout beside it. Returns the canonical main repo, the
+ * sibling checkout path, and a claudeDir. The sibling layout is what
+ * `git worktree add <beside-repo>` produces and what issue #3 recovers.
+ */
+function setupSiblingWorktree(): { repo: string; sibling: string; claudeDir: string } {
+  const parent = makeTempDir('parent');
+  const mainDir = join(parent, 'myrepo');
+  execFileSync('git', ['init', '-q', mainDir], { stdio: 'ignore' });
+  execFileSync(
+    'git',
+    ['-C', mainDir, '-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-q', '--allow-empty', '-m', 'init'],
+    { stdio: 'ignore' },
+  );
+  const repo = realpathSync(mainDir);
+  const sibling = join(parent, 'myrepo-wt-cli');
+  execFileSync('git', ['-C', mainDir, 'worktree', 'add', '-q', sibling], { stdio: 'ignore' });
+  const claudeDir = makeTempDir('claude');
+  return { repo, sibling, claudeDir };
 }
 
 async function scanJson(repo: string, claudeDir: string): Promise<JsonOutput> {
@@ -185,5 +207,91 @@ describe('truthfulness: worktree aggregation + deleted-cwd recovery', () => {
     const parsed = JSON.parse(result.output) as JsonOutput;
     expect(parsed.session_count).toBe(1);
     expect(parsed.warnings.unresolvable_cwd).toBe(0);
+  });
+
+  // --- sibling worktrees (issue #3): the checkout is BESIDE the main repo ---
+
+  it('recovers a SIBLING-worktree session and aggregates it with the main checkout', async () => {
+    const { repo, sibling, claudeDir } = setupSiblingWorktree();
+
+    // Session A: run from the main repo, edit the main copy.
+    writeSession(claudeDir, 'main', transcript(repo, join(repo, 'src', 'billing', 'a.ts')));
+    // Session B: run from the SIBLING worktree, edit the sibling copy of the SAME
+    // file. Its paths are absolute and OUTSIDE the repo prefix, so without the
+    // checkout-root strip they would fragment into an absolute-path area.
+    writeSession(
+      claudeDir,
+      'sibling',
+      transcript(sibling, join(sibling, 'src', 'billing', 'a.ts')),
+    );
+
+    const parsed = await scanJson(repo, claudeDir);
+
+    // Both sessions scanned — the sibling-worktree session was RECOVERED, not dropped.
+    expect(parsed.session_count).toBe(2);
+    expect(parsed.warnings.unresolvable_cwd).toBe(0);
+    // Exactly ONE area row — the sibling file collapsed onto the main checkout's area.
+    const areas = parsed.areas.filter((a) => a.key === 'src/billing');
+    expect(areas).toHaveLength(1);
+    expect(areas[0]!.sessions_total).toBe(2);
+    // No area key leaked the sibling-worktree prefix or stayed absolute.
+    for (const a of parsed.areas) {
+      expect(a.key.startsWith('/')).toBe(false);
+      expect(a.key).not.toContain('-wt-cli');
+    }
+  });
+
+  it('recovers a session whose cwd was a since-deleted SIBLING worktree (the dogfood case)', async () => {
+    const { repo, sibling, claudeDir } = setupSiblingWorktree();
+
+    // A session referencing the sibling checkout, then DELETE the checkout. Its
+    // `gitdir` registration in the main repo outlives it — the only evidence left.
+    writeSession(
+      claudeDir,
+      'deleted-sibling',
+      transcript(sibling, join(sibling, 'src', 'billing', 'c.ts')),
+    );
+    rmSync(sibling, { recursive: true, force: true });
+    // One healthy session in the main checkout alongside it.
+    writeSession(claudeDir, 'main', transcript(repo, join(repo, 'src', 'billing', 'd.ts')));
+
+    const parsed = await scanJson(repo, claudeDir);
+
+    // The deleted-sibling session was RECOVERED, not counted as unresolvable.
+    expect(parsed.session_count).toBe(2);
+    expect(parsed.warnings.unresolvable_cwd).toBe(0);
+    // Its file relativized (via the recovered checkout root) to the canonical area.
+    const area = parsed.areas.find((a) => a.key === 'src/billing');
+    expect(area).toBeDefined();
+    expect(area!.sessions_total).toBe(2);
+    for (const a of parsed.areas) {
+      expect(a.key.startsWith('/')).toBe(false);
+    }
+  });
+
+  it('runReflect --transcript: a sibling-worktree session relativizes onto the main repo areas', async () => {
+    // Guards the reflect path's checkout-root threading (buildFindingFromEnvelope
+    // resolves checkoutRoot from cwds and passes it to relativize). Without it the
+    // sibling file would survive as an absolute area key.
+    const { sibling, claudeDir } = setupSiblingWorktree();
+    writeSession(
+      claudeDir,
+      'sib',
+      transcript(sibling, join(sibling, 'src', 'billing', 'a.ts')),
+    );
+    const file = join(claudeDir, 'projects', 'slug', 'sib.jsonl');
+
+    const result = await runReflect({ transcript: file, format: 'json' });
+    expect(result.exitCode).toBe(0);
+    const parsed = JSON.parse(result.output) as ReflectFinding;
+
+    // The sibling-worktree file relativized (via the recovered checkout root) to a
+    // repo-relative area — NOT an absolute path leaking the sibling-worktree prefix.
+    const keys = parsed.record.areas.map((a) => a.key);
+    expect(keys).toContain('src/billing');
+    for (const k of keys) {
+      expect(k.startsWith('/')).toBe(false);
+      expect(k).not.toContain('-wt-cli');
+    }
   });
 });

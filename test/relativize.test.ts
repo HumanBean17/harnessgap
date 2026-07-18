@@ -79,6 +79,26 @@ describe('relativizeFilePath', () => {
     expect(relativizeFilePath('/etc/hosts', REPO)).toBe('/etc/hosts');
   });
 
+  it('strips a SIBLING-worktree checkout root when provided', () => {
+    // The cwd lived in a SIBLING worktree (`<parent>/myrepo-wt-cli` beside
+    // `<parent>/myrepo`), so file paths are absolute and OUTSIDE the repo prefix.
+    // Without the checkout root they'd survive as absolute paths; with it they
+    // collapse onto the same repo-relative areas as the main checkout.
+    const checkoutRoot = '/Users/x/code/myrepo-wt-cli';
+    expect(
+      relativizeFilePath(`${checkoutRoot}/src/billing/charge.ts`, REPO, checkoutRoot),
+    ).toBe('src/billing/charge.ts');
+  });
+
+  it('leaves a sibling-worktree file absolute when no checkout root is given', () => {
+    // Proves the checkout-root strip is load-bearing: the absolute path sits
+    // outside the repo prefix (`myrepo-wt-cli`, not `myrepo/...`), so without the
+    // checkout root it passes through unchanged.
+    expect(
+      relativizeFilePath('/Users/x/code/myrepo-wt-cli/src/billing/charge.ts', REPO),
+    ).toBe('/Users/x/code/myrepo-wt-cli/src/billing/charge.ts');
+  });
+
   it('handles repoRoot without trailing slash and exact-root file', () => {
     // repoRoot itself (degenerate) falls back to the original.
     expect(relativizeFilePath(REPO, REPO)).toBe(REPO);
@@ -148,7 +168,15 @@ describe('relativizeEnvelopeFiles', () => {
       `${REPO}/.agents/worktrees/dg/src/billing/charge.ts`,
       REPO,
     );
+    // ...and a SIBLING worktree (outside the repo prefix) collapses too, given
+    // the checkout root the resolver surfaces.
+    const sibling = relativizeFilePath(
+      '/Users/x/code/myrepo-wt-cli/src/billing/charge.ts',
+      REPO,
+      '/Users/x/code/myrepo-wt-cli',
+    );
     expect(wt1).toBe(main);
     expect(wt2).toBe(main);
+    expect(sibling).toBe(main);
   });
 });

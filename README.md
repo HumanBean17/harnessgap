@@ -260,7 +260,12 @@ harnessgap is built to run offline on private transcripts. Five guarantees:
    Worktree checkouts (`.git` file) resolve up to the main repo (`.git`
    directory), so a project's main checkout and all worktrees aggregate
    together, and sessions whose cwd was a since-deleted worktree are recovered.
-   Symlinks in transcript directories are rejected.
+   Sibling worktrees (a checkout beside, not nested under, the main repo) are
+   recovered by scanning candidate siblings' `.git/worktrees/<name>/gitdir`
+   registrations — still only `stat` / `readdir` / tiny text-file reads, with no
+   naming-convention heuristic. The recovered checkout root relativizes those
+   sessions' file paths, so sibling-worktree sessions aggregate under the same
+   areas as the main checkout. Symlinks in transcript directories are rejected.
 
 ## Dependency egress audit
 
