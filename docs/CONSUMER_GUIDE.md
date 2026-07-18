@@ -571,6 +571,14 @@ malformed transcript line, an oversized line, an unresolvable `cwd`, a symlink).
 The scan continues; the counts tell you how much was dropped. No prose is
 included.
 
+**Which languages does `corrections` detect?**
+English and Russian. Course-correction keywords (`no`, `wait`, `undo`,
+`actually`, … and `нет`, `стоп`, `отмена`, `лучше`, …) are matched per language
+with script-aware normalization (Cyrillic `ё`→`е`, punctuation ignored), so
+`«нет,»` and `нет` match identically. Other signals are language-agnostic
+(tool-call shape, file edits, exit codes). Adding another language is a
+catalog-only change.
+
 ---
 
 ## See also
