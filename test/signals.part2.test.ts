@@ -203,4 +203,22 @@ describe('computeSignals — part 2 (abandonment, oscillation, wall_clock_per_li
     ];
     expect(computeSignals(noEdits, cfg()).wall_clock_per_line_ms).toBeNull();
   });
+
+  it('10. wall_clock_per_line_ms: winsorized at the bootstrap threshold (issue #33)', () => {
+    const cap = DEFAULT_CONFIG.detector.bootstrap_thresholds.wall_clock_per_line_ms; // 300000
+    // Near-zero-edit session over a long span: raw 600000ms/line would
+    // single-handedly inflate p90/max and swing the composite — clamped to cap.
+    const inflated: NormalizedEvent[] = [
+      toolCall(iso(0), 'edit', { files: ['x.ts'], lines_changed: 1 }),
+      toolCall(iso(600_000), 'read', { files: ['x.ts'] }),
+    ];
+    expect(computeSignals(inflated, cfg()).wall_clock_per_line_ms).toBe(cap);
+
+    // A genuine value below the cap passes through unchanged (600000ms/10 = 60000).
+    const sane: NormalizedEvent[] = [
+      toolCall(iso(0), 'edit', { files: ['x.ts'], lines_changed: 10 }),
+      toolCall(iso(600_000), 'read', { files: ['x.ts'] }),
+    ];
+    expect(computeSignals(sane, cfg()).wall_clock_per_line_ms).toBe(60_000);
+  });
 });

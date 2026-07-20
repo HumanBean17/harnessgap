@@ -25,6 +25,14 @@ describe('stripWorktreePrefix', () => {
     expect(stripWorktreePrefix('.git/worktrees/abc/a.ts')).toBe('a.ts');
   });
 
+  it('strips .worktrees/<name>/ prefix (hidden dir named worktrees itself — issue #30)', () => {
+    // The layout `.worktrees/feat-add-service-logging-discovery/…` seen in real
+    // transcripts: `worktrees` is the hidden checkout dir, not a subdir of one.
+    expect(
+      stripWorktreePrefix('.worktrees/feat-add-service-logging-discovery/src/a.ts'),
+    ).toBe('src/a.ts');
+  });
+
   it('passes a plain repo-relative path through', () => {
     expect(stripWorktreePrefix('src/billing/charge.ts')).toBe(
       'src/billing/charge.ts',
@@ -63,6 +71,14 @@ describe('relativizeFilePath', () => {
     expect(
       relativizeFilePath(`${REPO}/.agents/worktrees/dg/src/a.ts`, REPO),
     ).toBe('src/a.ts');
+  });
+
+  it('strips a .worktrees/<name>/ prefix (issue #30 layout)', () => {
+    // The main repo's `.worktrees/<name>/` checkout must collapse so it
+    // aggregates with the main copy — otherwise the prefix survives as the area.
+    expect(
+      relativizeFilePath(`${REPO}/.worktrees/feat-add/src/billing/charge.ts`, REPO),
+    ).toBe('src/billing/charge.ts');
   });
 
   it('passes an already-relative path through (worktree-stripped only)', () => {
@@ -168,6 +184,11 @@ describe('relativizeEnvelopeFiles', () => {
       `${REPO}/.agents/worktrees/dg/src/billing/charge.ts`,
       REPO,
     );
+    // ...and the `.worktrees/<name>/` layout (issue #30) collapses too.
+    const wt3 = relativizeFilePath(
+      `${REPO}/.worktrees/feat-add/src/billing/charge.ts`,
+      REPO,
+    );
     // ...and a SIBLING worktree (outside the repo prefix) collapses too, given
     // the checkout root the resolver surfaces.
     const sibling = relativizeFilePath(
@@ -177,6 +198,7 @@ describe('relativizeEnvelopeFiles', () => {
     );
     expect(wt1).toBe(main);
     expect(wt2).toBe(main);
+    expect(wt3).toBe(main);
     expect(sibling).toBe(main);
   });
 });

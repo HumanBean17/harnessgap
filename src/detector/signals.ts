@@ -17,7 +17,7 @@ export function computeSignals(events: NormalizedEvent[], cfg: Config): SignalVa
     corrections: computeCorrections(events, cfg),
     abandonment: computeAbandonment(events, cfg),
     oscillation: computeOscillation(events, cfg),
-    wall_clock_per_line_ms: computeWallClockPerLine(events),
+    wall_clock_per_line_ms: computeWallClockPerLine(events, cfg),
   };
 }
 
@@ -193,14 +193,22 @@ function computeOscillation(events: NormalizedEvent[], cfg: Config): number {
 }
 
 /**
- * `(last event t − first event t)` in ms / totalEditedLines. `null` when no
- * edit lines were produced. Derived from event timestamps only; this can
- * diverge from `envelope.duration_ms`, which the adapter derives from raw
- * record timestamps (first..last record). After the tool_use/result merge a
- * merged tool_call's `t` is the result's timestamp, so the two spans are not
- * guaranteed equal.
+ * `(last event t − first event t)` in ms / totalEditedLines, winsorized at the
+ * bootstrap threshold. `null` only when no edit lines were produced. Derived
+ * from event timestamps only; this can diverge from `envelope.duration_ms`,
+ * which the adapter derives from raw record timestamps (first..last record).
+ * After the tool_use/result merge a merged tool_call's `t` is the result's
+ * timestamp, so the two spans are not guaranteed equal.
+ *
+ * The value is clamped to `cfg.detector.bootstrap_thresholds.wall_clock_per_line_ms`
+ * (issue #33): a near-zero-edit session over a long span yields a raw per-line
+ * value in the minutes- or years-per-line range that would single-handedly
+ * inflate p90/max and swing the percentile composite / the inherent-complexity
+ * cause. Capping bounds that outlier. The cap preserves the bootstrap trip
+ * exactly — `raw >= threshold` iff `min(raw, threshold) >= threshold` — so
+ * flagging behavior is unchanged; only the magnitude is bounded.
  */
-function computeWallClockPerLine(events: NormalizedEvent[]): number | null {
+function computeWallClockPerLine(events: NormalizedEvent[], cfg: Config): number | null {
   let totalEditedLines = 0;
   for (const e of events) {
     if (e.kind === 'tool_call' && e.tool === 'edit') {
@@ -209,7 +217,9 @@ function computeWallClockPerLine(events: NormalizedEvent[]): number | null {
   }
   if (totalEditedLines === 0) return null;
   const durationMs = Date.parse(events[events.length - 1].t) - Date.parse(events[0].t);
-  return durationMs / totalEditedLines;
+  const raw = durationMs / totalEditedLines;
+  const cap = cfg.detector.bootstrap_thresholds.wall_clock_per_line_ms;
+  return Math.min(raw, cap);
 }
 
 /** Case-insensitive substring match of any pattern against a scrubbed cmd. */

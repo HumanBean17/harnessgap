@@ -32,11 +32,16 @@
 //   excluded (can't date it).
 // - --limit: applied AFTER all filtering. Negative limits are ignored.
 // - empty / unresolvable cwd: counted ONLY under `unresolvable_cwd` (the
-//   specific reason), not double-counted under `skipped_sessions`.
-// - ConfigError from loadConfig / parseDuration is NOT caught here — it
-//   propagates to the CLI for non-zero exit. runScan's exitCode is always 0.
+//   specific reason), not double-counted under `skipped_sessions`. The count is
+//   scoped to the requested repo when one resolved (sessions whose cwd lived
+//   under it), else machine-wide — see the scoping note by `filterRepo`.
+// - an explicit `--repo` that does not resolve throws `ConfigError` (issue #29):
+//   never silently falls back to a machine-wide scan. ConfigError from
+//   loadConfig / parseDuration / the bogus-`--repo` guard is NOT caught here —
+//   it propagates to the CLI for non-zero exit. runScan's exitCode is always 0.
 
-import { loadConfig, parseDuration } from './config.js';
+import { loadConfig, parseDuration, ConfigError } from './config.js';
+import * as path from 'node:path';
 import { discoverTranscripts, defaultClaudeDir } from './walk.js';
 import { streamSession } from './adapter/stream.js';
 import { resolveMainRepo, resolveRepo } from './git.js';
@@ -124,6 +129,10 @@ export async function runScan(opts: ScanOptions): Promise<ScanResult> {
   //    git-cache across all sessions (cwd repeats are common across transcripts).
   const cache = new Map<string, RepoResolution | null>();
   const envelopes: NormalizedEnvelope[] = [];
+  // Sessions that could not be resolved to any repo, retained with their cwds so
+  // `unresolvable_cwd` can be scoped to the requested repo after filtering (see
+  // below). Not double-counted under skipped_sessions.
+  const unresolved: { cwds: string[] }[] = [];
 
   for (const file of files) {
     const { envelope, cwds, warnings: streamWarnings } = await streamSession(file);
@@ -131,10 +140,9 @@ export async function runScan(opts: ScanOptions): Promise<ScanResult> {
     warnings.oversized_lines += streamWarnings.oversized_lines;
     warnings.truncated_sessions += streamWarnings.truncated_sessions;
 
-    // No cwd at all → can't resolve a repo. Count under unresolvable_cwd only
-    // (not double-counted under skipped_sessions).
+    // No cwd at all → can't resolve a repo. Stash for scoped counting below.
     if (cwds.length === 0) {
-      warnings.unresolvable_cwd += 1;
+      unresolved.push({ cwds });
       continue;
     }
 
@@ -152,7 +160,7 @@ export async function runScan(opts: ScanOptions): Promise<ScanResult> {
       }
     }
     if (repo === null) {
-      warnings.unresolvable_cwd += 1;
+      unresolved.push({ cwds });
       continue;
     }
 
@@ -174,6 +182,31 @@ export async function runScan(opts: ScanOptions): Promise<ScanResult> {
   } else {
     filterRepo = resolveMainRepo(process.cwd(), cache) ?? '';
   }
+
+  // An explicit --repo that doesn't resolve (typo, stale path, deleted project,
+  // non-git dir) is a user error — NOT a reason to fall back to a machine-wide
+  // scan. Without this guard the `filterRepo === ''` fallthrough below would
+  // silently mix every project's transcripts into one report (privacy +
+  // correctness problem — see issue #29). Error loudly instead. The fallthrough
+  // is reserved for "no --repo AND process.cwd() unresolved" (a genuine,
+  // intentional machine-wide scan).
+  if (opts.repo !== undefined && filterRepo === '') {
+    throw new ConfigError(
+      `--repo ${JSON.stringify(opts.repo)} does not resolve to a git repository`,
+    );
+  }
+
+  // Scope `unresolvable_cwd` to the requested repo when one resolved: count only
+  // sessions whose cwd lived UNDER that repo (e.g. a since-deleted nested
+  // worktree). Sibling-worktree and other projects' unresolvable sessions are
+  // out of scope — they never belonged to this repo by path, and recovering
+  // them needs a naming heuristic the resolver deliberately avoids (issue #31:
+  // the machine-wide count was being shown as if per-repo). With no repo context
+  // (machine-wide scan, filterRepo === '') every unresolvable session is in scope.
+  warnings.unresolvable_cwd =
+    filterRepo === ''
+      ? unresolved.length
+      : unresolved.filter((s) => s.cwds.some((c) => isUnderRepo(c, filterRepo))).length;
 
   let filtered: NormalizedEnvelope[];
   if (filterRepo !== '') {
@@ -552,4 +585,16 @@ function degenerateRecord(envelope: NormalizedEnvelope): StruggleRecord {
       wall_clock_per_line_ms: null,
     },
   };
+}
+
+/**
+ * True iff `cwd` lives under `repo` (i.e. `repo` is an ancestor directory).
+ * Best-effort string check (no symlink resolution) — `repo` is already
+ * canonical from the resolver, and a nested deleted-worktree cwd shares the
+ * same on-disk ancestor prefix in the common case. Used only to scope the
+ * `unresolvable_cwd` warnings count, so a miss merely under-counts a warning.
+ */
+function isUnderRepo(cwd: string, repo: string): boolean {
+  if (cwd === '' || repo === '') return false;
+  return path.resolve(cwd).startsWith(repo + '/');
 }

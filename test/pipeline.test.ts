@@ -194,16 +194,43 @@ describe('runScan (pipeline orchestration)', () => {
     expect(result.exitCode).toBe(0);
   });
 
-  it('5. unresolvable cwd → warnings.unresolvable_cwd===1, NOT double-counted in skipped_sessions', async () => {
+  it('5. unresolvable cwd OUTSIDE the scanned repo → not counted for that repo (#31 scoping), not double-counted', async () => {
     const { repo, claudeDir } = setupUnresolvableFixture();
     const result = await runScan({ repo, claudeDir });
 
-    expect(result.warnings.unresolvable_cwd).toBe(1);
+    // The bad session's cwd (/nonexistent/...) is unrelated to `repo`, so under
+    // the scoped count it is NOT attributed to this repo's warnings (the #31
+    // fix: previously the machine-wide count of 1 leaked into this repo's line).
+    expect(result.warnings.unresolvable_cwd).toBe(0);
     // The specific reason is counted once; skipped_sessions is reserved for
     // other skip reasons and stays 0 (no double-count in the warnings line).
     expect(result.warnings.skipped_sessions).toBe(0);
     expect(result.sessionCount).toBe(1);
     expect(result.exitCode).toBe(0);
+  });
+
+  it('5b. machine-wide scan (no repo context) counts every unresolvable cwd once', async () => {
+    const { claudeDir } = setupUnresolvableFixture();
+    // Run from a non-git cwd so resolveMainRepo(process.cwd()) === '' → the
+    // machine-wide branch (filterRepo === '') counts ALL unresolvable sessions,
+    // regardless of which repo they (don't) belong to.
+    const nonGit = makeTempDir('no-git-cwd');
+    const origCwd = process.cwd();
+    process.chdir(nonGit);
+    try {
+      const result = await runScan({ claudeDir });
+      expect(result.warnings.unresolvable_cwd).toBe(1);
+      expect(result.warnings.skipped_sessions).toBe(0);
+    } finally {
+      process.chdir(origCwd);
+    }
+  });
+
+  it('5c. explicit --repo that does not resolve → throws ConfigError (#29), no machine-wide fallthrough', async () => {
+    const { claudeDir } = setupFixture();
+    await expect(
+      runScan({ repo: '/nonexistent/harnessgap/bogus-' + Date.now(), claudeDir }),
+    ).rejects.toThrow(/does not resolve to a git repository/);
   });
 
   it('6. empty claudeDir → sessionCount===0, exitCode===0, output says no sessions', async () => {

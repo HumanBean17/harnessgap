@@ -191,6 +191,43 @@ describe('truthfulness: worktree aggregation + deleted-cwd recovery', () => {
     expect(area!.sessions_total).toBe(2);
   });
 
+  it('collapses a .worktrees/<name>/ checkout and the main checkout into ONE area (issue #30)', async () => {
+    const { repo, claudeDir } = setup();
+
+    // A live worktree checkout under `.worktrees/feat-add` (the hidden checkout
+    // dir named `worktrees` itself — the layout real transcripts use that the
+    // old WORKTREE_RE missed).
+    const wt = join(repo, '.worktrees', 'feat-add');
+    mkdirSync(join(wt, 'src', 'billing'), { recursive: true });
+    writeFileSync(join(wt, '.git'), 'gitdir: ../../.git/worktrees/feat-add');
+
+    // Session A: run from the main repo, edit the main copy.
+    writeSession(
+      claudeDir,
+      'main',
+      transcript(repo, join(repo, 'src', 'billing', 'a.ts')),
+    );
+    // Session B: run from the worktree, edit the worktree copy of the SAME file.
+    writeSession(
+      claudeDir,
+      'worktree',
+      transcript(wt, join(wt, 'src', 'billing', 'a.ts')),
+    );
+
+    const parsed = await scanJson(repo, claudeDir);
+
+    expect(parsed.session_count).toBe(2);
+    // Exactly ONE area row — the `.worktrees/feat-add/` prefix collapsed.
+    const areas = parsed.areas.filter((a) => a.key === 'src/billing');
+    expect(areas).toHaveLength(1);
+    expect(areas[0]!.sessions_total).toBe(2);
+    // No area key carries a `.worktrees` prefix.
+    for (const a of parsed.areas) {
+      expect(a.key).not.toContain('.worktrees');
+      expect(a.key).not.toContain('worktrees/');
+    }
+  });
+
   it('normalizes --repo <worktree path> to the whole project', async () => {
     const { repo, claudeDir } = setup();
     const wt = join(repo, '.claude', 'worktrees', 'feat');

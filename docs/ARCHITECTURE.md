@@ -37,7 +37,7 @@ reuses the adapter and detector verbatim and only adds persistence.
 | `src/config.ts` | Load + validate `.harnessgap.yml`; deep-merge over defaults; parse `--since` durations. | `loadConfig`, `parseDuration`, `DEFAULT_CONFIG`, `ConfigError` |
 | `src/git.ts` | Stat-based MAIN-repo resolver. Walks up from a cwd to the nearest directory `.git` (the main repo; worktrees only hold a `.git` file); also recovers SIBLING worktrees by scanning candidate siblings' `.git/worktrees/<name>/gitdir` registrations, returning the recovered checkout root alongside the repo. No git invocation, no shell. Memoized by cwd. | `resolveRepo`, `RepoResolution`, `resolveMainRepo`, `walkToRepo` |
 | `src/walk.ts` | Discover `.jsonl` transcripts under `<claudeDir>/projects/*/*.jsonl`. Rejects symlinks. | `discoverTranscripts`, `defaultClaudeDir` |
-| `src/relativize.ts` | Pure file-path relativization: strip the repo-root prefix, then collapse `<hidden>/worktrees/<name>/` prefixes so the same file across the main checkout and nested worktrees aggregates into one area; also strips a sibling-worktree checkout root (`worktreeCheckoutRoot`, passed by the resolver) so sibling-worktree files collapse onto the same repo-relative areas as the main checkout. | `relativizeFilePath`, `stripWorktreePrefix`, `relativizeEnvelopeFiles` |
+| `src/relativize.ts` | Pure file-path relativization: strip the repo-root prefix, then collapse worktree checkout prefixes — `.<hidden>/worktrees/<name>/` (Claude Code's `.claude/worktrees/…`) OR `.worktrees/<name>/` (a hidden checkout dir named `worktrees` itself) — so the same file across the main checkout and nested worktrees aggregates into one area; also strips a sibling-worktree checkout root (`worktreeCheckoutRoot`, passed by the resolver) so sibling-worktree files collapse onto the same repo-relative areas as the main checkout. | `relativizeFilePath`, `stripWorktreePrefix`, `relativizeEnvelopeFiles` |
 | `src/pipeline.ts` | Thin I/O shell: orchestrates walk → stream → resolve-main-repo → relativize → detect → aggregate → output. Also hosts `runReflect`, the n=1 session-end analog (see §10). | `runScan`, `ScanOptions`, `ScanResult`, `runReflect`, `ReflectOptions`, `ReflectResult` |
 | `src/cli.ts` | commander bin entry. Parses args, awaits `runScan`/`runReflect`/`initClaude`, writes stdout, exits. | `program` (`scan` default, `reflect`, `init` commands) |
 | `src/egress.ts` | §11 no-network guard: regexes for forbidden imports + `fetch()` calls. Single source of truth shared by the egress audit. | `FORBIDDEN_IMPORT`, `FORBIDDEN_FETCH_CALL`, `hasForbiddenImport`, `hasFetchCall`, `hasForbiddenEgress` |
@@ -55,7 +55,7 @@ reuses the adapter and detector verbatim and only adds persistence.
 | `src/detector/index.ts` | Detector orchestration: signals → score (once, whole batch) → ambient baseline → areas → record. Returns `{records, finding, baseline}`. Under `--diagnose`, also runs the opt-in `computeEvidence` projection per envelope (the only detector call site for the Diagnoser; absent by default so `StruggleRecord.evidence` is unset and default output stays byte-identical). | `runDetector` |
 | `src/diagnoser/classify-util.ts` | Pure cmd/file classifiers over fixed catalogs. `classifyCmd` reuses `cfg.areas.test_cmd_patterns` for the `test` bucket. | `classifyCmd`, `classifyFile` |
 | `src/diagnoser/evidence.ts` | Pure evidence projection: buckets failed execs by cmd-class + edited files by file-class. Single pass; zero-filled buckets. | `computeEvidence` |
-| `src/diagnoser/profile.ts` | Pure per-area profile builder: groups flagged records by area, derives per-signal medians, elevation flags (vs `bootstrap_thresholds`, mode-independent), and element-wise evidence sums. | `buildProfiles`, `UnitProfile` |
+| `src/diagnoser/profile.ts` | Pure per-area profile builder: groups flagged records by area, derives per-signal medians, elevation flags (mode-aware: bootstrap → `bootstrap_thresholds`; percentile → strictly above the cohort median), and element-wise evidence sums. | `buildProfiles`, `UnitProfile` |
 | `src/diagnoser/repo-context.ts` | Doc-existence grounding — the only new I/O in the slice. Recursively lists files under `cfg.docs_dirs`, path-confined to the repo root, never follows symlinks, fail-open. | `gatherRepoContext`, `RepoContext` |
 | `src/diagnoser/classify.ts` | Pure cause-classification rule engine: picks one `Cause` per unit from `{profile, repoContext, cfg}` and emits a derived-only `Diagnosis`. | `classify` |
 | `src/diagnoser/index.ts` | Thin orchestration: `buildProfiles` → per-unit `gatherRepoContext` → `classify`. Two fail-open layers: outer batch-level try/catch (degrades to `[]`) + per-unit try/catch (degrades to one `unclassified` Diagnosis); never throws. | `diagnoseUnits` |
@@ -88,9 +88,9 @@ reuses the adapter and detector verbatim and only adds persistence.
    repo; the first success wins. `envelope.repo` is set to the MAIN repo root
    (so a project's main checkout + all worktrees share one repo value and
    aggregate), recovering nested and SIBLING worktrees alike (see §8).
-   Unresolved → `unresolvable_cwd++`, session skipped (counted
-   once — not double-counted under `skipped_sessions`). A single cache Map is
-   threaded across all sessions.
+   Unresolved → stashed for scoped `unresolvable_cwd` counting (below),
+   session skipped (counted once — not double-counted under
+   `skipped_sessions`). A single cache Map is threaded across all sessions.
 5. **Relativize** — `relativizeEnvelopeFiles(envelope, repo, checkoutRoot)`
    rewrites every `input_digest.files` path to canonical repo-relative form
    (strip repo prefix, then collapse worktree checkout prefixes, and strip the
@@ -99,7 +99,14 @@ reuses the adapter and detector verbatim and only adds persistence.
 6. **Filter** — by repo (`--repo` is itself normalized through
    `resolveMainRepo`, so `--repo <worktree>` or `<subdir>` matches the whole
    project), then `--since` (`started_at >= now − duration`), then `--limit`
-   (applied last, after all filtering).
+   (applied last, after all filtering). An explicit `--repo <path>` that does
+   NOT resolve (typo, stale path, deleted project, non-git dir) throws a
+   `ConfigError` → CLI exits 1; it never silently falls back to a machine-wide
+   scan (issue #29). `unresolvable_cwd` is scoped here: when a repo resolved,
+   only sessions whose cwd lived under that repo count (a since-deleted nested
+   worktree); with no repo context (machine-wide scan) every unresolved session
+   counts (issue #31 — previously the machine-wide total leaked into a
+   single-repo scan's warnings line).
 7. **Detector** — `runDetector(filtered, cfg, forceBootstrap)` computes signals
    per envelope, scores the whole batch once, assesses the ambient baseline
    once over the batch, localizes areas, and returns
@@ -189,7 +196,7 @@ heuristic over normalized events. Two deferred signals (`context_thrash`,
 | `corrections` | User course-corrections landing within `correction_window_ms` after a `tool_call`, or before the next `assistant_msg`. |
 | `abandonment` | Last `tail_fraction` of events is explore-heavy with zero edits; suppressed when the whole session is a research signature (zero edits AND zero test/build exec). Boolean. |
 | `oscillation` | Completed `edit → test/build-exec(ok=false) → edit-same-file` cycles, counted per file (exact path match). |
-| `wall_clock_per_line` | `(last event t − first event t) / edited_lines`. `null` when no edit lines. |
+| `wall_clock_per_line` | `(last event t − first event t) / edited_lines`, winsorized at `bootstrap_thresholds.wall_clock_per_line_ms`. `null` when no edit lines. The cap bounds near-zero-edit sessions over long spans that would otherwise inflate p90/max and swing the composite (issue #33); the bootstrap trip is preserved exactly (`raw >= threshold` iff `min(raw, threshold) >= threshold`). |
 
 `failure_streak` uses `ok` broadly (any exec failure); `oscillation` is
 cmd-aware — it only counts an exec as failure when `cmd` matches a
@@ -519,15 +526,27 @@ and derives per-signal medians, elevation flags, and element-wise evidence sums;
 `gatherRepoContext` probes `cfg.docs_dirs` for an existing doc; `classify` picks
 the cause. Output is sorted by `unit.key` ascending (deterministic).
 
-### Elevation yardstick (mode-independent)
+### Elevation yardstick (mode-aware)
 
-`buildProfiles` flags a signal **elevated** when the unit's per-signal median
-meets `cfg.detector.bootstrap_thresholds` (`>=` for numbers; majority-`true` AND
-threshold `true` for `abandonment`; nullable signals elevated only when the
-median is non-null and meets threshold). This is the same threshold set used by
-bootstrap scoring, so elevation reads the same in percentile and bootstrap modes
-— the percentile mode is reserved for the leaderboard `score_pct`, not for
-Diagnoser elevation.
+`buildProfiles` flags a signal **elevated** differently by scoring mode
+(issue #32 — the absolute floors below were miscalibrated for real
+percentile-mode data, where `reread`/`oscillation` almost never reached them, so
+every flagged area collapsed to `unclassified`):
+
+- **Bootstrap mode:** the unit's per-signal median meets
+  `cfg.detector.bootstrap_thresholds` (`>=` for numbers; majority-`true` AND
+  threshold `true` for `abandonment`; nullable signals elevated only when the
+  median is non-null and meets threshold) — unchanged.
+- **Percentile mode:** a number is elevated when the unit's per-signal median is
+  **strictly greater than the cohort median** across all records in the batch
+  (the repo's sessions — the same set the scorer ranked); i.e. the area
+  expresses the signal more than a typical session. A sparse cohort (median 0)
+  therefore elevates any area that actually has the signal. `abandonment` keeps
+  absolute-threshold elevation in both modes; nullable signals never elevate on
+  a null median.
+
+The cohort median lets a flagged area's expressed signals actually elevate, so
+the specific-cause gates below can fire on real data.
 
 ### Cause selection (pure rule engine, `src/diagnoser/classify.ts`)
 

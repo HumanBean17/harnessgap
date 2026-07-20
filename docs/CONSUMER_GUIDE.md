@@ -63,7 +63,7 @@ harnessgap scan [options]
 
 | Flag | Default | Description |
 | --- | --- | --- |
-| `--repo <path>` | main repo of the cwd | Filter to sessions whose resolved main-repo root matches this path. The path is itself resolved to the project's main repo, so `--repo <worktree>` or `--repo <subdir>` matches the whole project (main checkout + all worktrees). |
+| `--repo <path>` | main repo of the cwd | Filter to sessions whose resolved main-repo root matches this path. The path is itself resolved to the project's main repo, so `--repo <worktree>` or `--repo <subdir>` matches the whole project (main checkout + all worktrees). If the path does not resolve to a git repo (typo, stale path, deleted project), the scan errors and exits 1 rather than silently falling back to a machine-wide scan. |
 | `--since <dur>` | all sessions | Only sessions started within this lookback: `30d`, `12h`, `5m`, `10s`. |
 | `--limit <n>` | none | Cap the number of sessions scanned. Useful for fast iteration. |
 | `--json` | off | Emit the JSON envelope instead of the human-readable table. |
@@ -187,6 +187,8 @@ Columns:
 The summary line reports flagged / unflagged / unlocalized area counts and the
 bootstrap session count (equal to `session_count` only in bootstrap mode). The
 warnings line appears only when at least one warning category is non-zero.
+`unresolvable_cwd` is scoped to the requested repo (only sessions whose cwd lived
+under it); with no `--repo` and an unresolvable cwd it is machine-wide.
 
 ### JSON envelope (`--json`)
 
@@ -225,7 +227,7 @@ A single JSON object on stdout, `schema_version: 1`:
         "corrections": 1,
         "abandonment": false,
         "oscillation": 1,
-        "wall_clock_per_line_ms": 412000.0
+        "wall_clock_per_line_ms": 300000.0
       }
     }
     // ...
@@ -248,7 +250,7 @@ A single JSON object on stdout, `schema_version: 1`:
 
 Notes:
 
-- `signals.explore_ratio` and `signals.wall_clock_per_line_ms` are `null` when not computable (e.g. no edits → `wall_clock_per_line_ms` is null; no exec/read → `explore_ratio` is null).
+- `signals.explore_ratio` and `signals.wall_clock_per_line_ms` are `null` when not computable (e.g. no edits → `wall_clock_per_line_ms` is null; no exec/read → `explore_ratio` is null). `wall_clock_per_line_ms` is winsorized at `bootstrap_thresholds.wall_clock_per_line_ms` (default 300000ms = 5min/line), so near-zero-edit sessions over long spans cannot inflate the value.
 - `signals.abandonment` is a boolean.
 - Sessions and areas are passed through verbatim (already scrubbed of prose upstream). No raw message text, commands, or transcript content appears anywhere in the envelope.
 
@@ -266,11 +268,11 @@ failure_streak        |          0 |          0 |          2 |          8 |     
 corrections           |          0 |          0 |          1 |          5 |          2
 abandonment           |          0 |          0 |          1 |          1 |          1
 oscillation           |          0 |          0 |          1 |          4 |          2
-wall_clock_per_line   |      12000 |     180000 |     640000 |    3200000 |     300000
+wall_clock_per_line   |      12000 |     180000 |     300000 |     300000 |     300000
 BASELINE — within norms · orientation 2 dirs / 6 files · zero-edit 36% · acute struggle rate 4% (threshold 30%)
 ```
 
-- **MIN / P50 / P90 / MAX** — distribution of each signal across sessions (R-7 linear interpolation).
+- **MIN / P50 / P90 / MAX** — distribution of each signal across sessions (R-7 linear interpolation). `wall_clock_per_line` is winsorized at its threshold (default 5min/line), so its P90/MAX never exceed it.
 - **THRESHOLD** (`active_threshold`) — the value a signal is currently judged against: in bootstrap mode, the configured `bootstrap_thresholds` value; in percentile mode, the `flag_pct`-percentile of that signal across sessions.
 - `abandonment` is boolean; its row is uniformly 0/1.
 

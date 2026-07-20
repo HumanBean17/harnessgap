@@ -214,6 +214,24 @@ describe('harnessgap CLI (spawn-based)', () => {
     expect(stderr).not.toContain('node:internal');
   });
 
+  it('4b. scan --repo <bogus> → stderr message, exit 1, no stdout leak (#29)', async () => {
+    const { claudeDir } = setupFixture();
+    const { stdout, stderr, code } = await runCli([
+      'scan',
+      '--repo',
+      '/nonexistent/harnessgap/bogus-' + Date.now(),
+      '--claude-dir',
+      claudeDir,
+    ]);
+
+    expect(code).toBe(1);
+    expect(stderr).toMatch(/does not resolve to a git repository/);
+    // No sessions leaked onto stdout — the privacy bug #29 describes is gone.
+    expect(stdout).toBe('');
+    // No stack trace leaked.
+    expect(stderr).not.toMatch(/at \w+ /);
+  });
+
   it('5. --version → prints version, exit 0', async () => {
     const { stdout, code } = await runCli(['--version']);
 
