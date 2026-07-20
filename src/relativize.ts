@@ -8,18 +8,25 @@
 
 import type { NormalizedEnvelope } from './types.js';
 
-// A repo-relative path whose first segment is a hidden tooling dir
-// (`.claude`, `.agents`, `.git`, …) immediately followed by `worktrees/<name>/`
-// is a worktree checkout prefix. The `<rest>` after the worktree name is the
-// canonical repo-relative path. Conservative on purpose: a leading dot-segment
-// is required, so a real source directory named `worktrees` is never touched.
-const WORKTREE_RE = /^\.[^/]+\/worktrees\/[^/]+\/(.+)$/;
+// A repo-relative path under a worktree CHECKOUT prefix is collapsed to the
+// canonical repo-relative path (the `<rest>` after the worktree name), so the
+// same file edited in a worktree and in the main checkout aggregates into one
+// area. Two on-disk layouts are recognized (issue #30):
+//   - `.<hidden>/worktrees/<name>/<rest>`  — Claude Code's default
+//     (`.claude/worktrees/…`), `.agents/worktrees/…`, `.git/worktrees/…`.
+//   - `.worktrees/<name>/<rest>`            — a hidden checkout dir named
+//     `worktrees` itself (e.g. `.worktrees/feat-add-service-logging/…`).
+// Conservative on purpose: a leading dot-segment AND a `worktrees` component
+// are both required, so a real source directory named `worktrees`
+// (`src/worktrees/…`, no leading dot) is never touched.
+const WORKTREE_RE = /^\.(?:[^/]+\/worktrees|worktrees)\/[^/]+\/(.+)$/;
 
 /**
  * Strip a worktree checkout prefix from a repo-relative path.
  * `.claude/worktrees/feat-xyz/src/foo.ts` → `src/foo.ts`.
  * `.agents/worktrees/dev-deps-guard/src/x` → `src/x`.
- * Paths that are not under a `<hidden>/worktrees/<name>/` prefix pass through.
+ * `.worktrees/feat-add/src/foo.ts` → `src/foo.ts`.
+ * Paths that are not under a recognized worktree prefix pass through.
  */
 export function stripWorktreePrefix(relPath: string): string {
   const m = WORKTREE_RE.exec(relPath);

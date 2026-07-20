@@ -369,4 +369,101 @@ describe('diagnoseUnits', () => {
       buildProfilesThrows.on = false;
     }
   });
+
+  it('(i) #32 percentile mode: above-cohort-median signals elevate → a specific cause fires (not unclassified)', () => {
+    // 25 low-signal baseline sessions + 5 struggling sessions on 'src/x'. In
+    // percentile mode the cohort median for every signal is driven down by the
+    // baseline, so the struggling area's signals are all "above typical" and
+    // elevate — letting the `doc` gate fire (explore_ratio + reread elevated,
+    // no doc). Under bootstrap absolute floors (reread>=5, explore_ratio>=10)
+    // these same signals would NOT elevate and the area collapses to
+    // `unclassified` — the bug #32 describes. This test pins both outcomes.
+    const repo = makeRepo(); // no docs/ → gatherRepoContext returns docExists=false
+    const baseline = Array.from({ length: 25 }, (_, i) =>
+      mkRecord({
+        session_id: `base${i}`,
+        flagged: false,
+        signals: zeroSignals({
+          explore_ratio: 0.1,
+          wall_clock_per_line_ms: 10_000,
+        }),
+      }),
+    );
+    const struggling = Array.from({ length: 5 }, (_, i) =>
+      mkRecord({
+        session_id: `strug${i}`,
+        areas: [{ key: 'src/x', weight: 1 }],
+        signals: zeroSignals({
+          explore_ratio: 1.0,
+          reread: 2,
+          failure_streak: 2,
+          corrections: 3,
+          oscillation: 2,
+          wall_clock_per_line_ms: 50_000,
+        }),
+      }),
+    );
+
+    // Percentile mode: cohort-median elevation → doc fires (was unclassified).
+    const pctRecords = [...baseline, ...struggling].map((r) => ({
+      ...r,
+      mode: 'percentile' as const,
+    }));
+    const pctOut = diagnoseUnits(pctRecords, CFG, repo);
+    expect(pctOut).toHaveLength(1);
+    expect(pctOut[0].unit.key).toBe('src/x');
+    expect(pctOut[0].cause).toBe('doc');
+    expect(pctOut[0].confidence).toBeGreaterThanOrEqual(0.5);
+
+    // Bootstrap mode (same signals): absolute floors → reread 2 < 5 and
+    // explore_ratio 1.0 < 10 do not elevate → doc gate closed → unclassified.
+    // Kept as the bootstrap regression guard (bootstrap elevation is unchanged).
+    const bootRecords = [...baseline, ...struggling].map((r) => ({
+      ...r,
+      mode: 'bootstrap' as const,
+    }));
+    const bootOut = diagnoseUnits(bootRecords, CFG, repo);
+    expect(bootOut).toHaveLength(1);
+    expect(bootOut[0].cause).toBe('unclassified');
+  });
+
+  it('(j) #32 elevation uses STRICT > cohort median (equal median does not elevate)', () => {
+    // Every record has reread === 1, so the cohort reread median is 1 AND the
+    // struggling area's reread median is 1 — equal. Under strict `>` reread does
+    // NOT elevate, so the `doc` gate (which requires reread elevated) stays
+    // closed even though explore_ratio is above-cohort. If the operator
+    // regressed to `>=`, reread would elevate and `doc` would fire. This pins
+    // the strict-`>` semantics that test (i) (all-strictly-above) could not.
+    const repo = makeRepo(); // no docs/ → docExists=false
+    const all: StruggleRecord[] = Array.from({ length: 25 }, (_, i) =>
+      mkRecord({
+        session_id: `base${i}`,
+        flagged: false,
+        signals: zeroSignals({ reread: 1, explore_ratio: 0.1, wall_clock_per_line_ms: 10_000 }),
+      }),
+    ).concat(
+      Array.from({ length: 5 }, (_, i) =>
+        mkRecord({
+          session_id: `strug${i}`,
+          score_pct: 90,
+          areas: [{ key: 'src/x', weight: 1 }],
+          signals: zeroSignals({
+            reread: 1, // === cohort median (1) → must NOT elevate under strict >
+            explore_ratio: 1.0,
+            corrections: 3,
+            oscillation: 2,
+            failure_streak: 2,
+            wall_clock_per_line_ms: 50_000,
+          }),
+        }),
+      ),
+    );
+    const records = all.map((r) => ({ ...r, mode: 'percentile' as const }));
+    const out = diagnoseUnits(records, CFG, repo);
+    expect(out).toHaveLength(1);
+    // reread not elevated → doc gate closed → NOT doc. (wall_clock elevated +
+    // meanScore 90 >= score_floor → inherent-complexity is what fires instead.)
+    expect(out[0].cause).not.toBe('doc');
+    expect(out[0].cause).toBe('inherent-complexity');
+  });
 });

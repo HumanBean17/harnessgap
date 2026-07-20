@@ -77,11 +77,16 @@ interface AreaAccum {
  * non-null values and yield `null` when all values are null; `abandonment`
  * uses strict majority (more than half `true` → `true`).
  *
- * Elevation (mode-independent): numbers `>=` the configured
- * `bootstrap_thresholds`; nullable signals elevated only when the median is
- * non-null AND meets the threshold; `abandonment` elevated when the majority
- * median is `true` and the configured threshold is `true` (the default). The
- * `>=` boundary means a median exactly at threshold is elevated.
+ * Elevation (mode-aware, issue #32): in bootstrap mode, numbers `>=` the
+ * configured `bootstrap_thresholds` (a median exactly at threshold is elevated).
+ * In percentile mode, a number is elevated when the area's median is STRICTLY
+ * greater than the COHORT median across all records — i.e. the area expresses
+ * the signal more than a typical session in this repo. The absolute floors are
+ * miscalibrated for real percentile-mode data (they were never reached, so every
+ * flagged area fell to `unclassified`); the cohort median lets the area's
+ * expressed signals elevate so the rule engine's specific-cause gates can fire.
+ * Nullable signals are never elevated on a null median; `abandonment` uses
+ * absolute-threshold elevation in both modes (majority `true` AND threshold true).
  *
  * Evidence: element-wise sum of each flagged record's `evidence` buckets;
  * records with no `evidence` contribute zero. Result always carries all 7
@@ -94,6 +99,18 @@ export function buildProfiles(
   cfg: Config,
 ): UnitProfile[] {
   const thresholds = cfg.detector.bootstrap_thresholds;
+  // Elevation yardstick is mode-aware (issue #32): bootstrap mode uses the
+  // absolute `bootstrap_thresholds` floors (unchanged); percentile mode compares
+  // each area's median to the COHORT median across all records — "this area
+  // expresses the signal more than a typical session in this repo." The absolute
+  // floors are miscalibrated for real percentile-mode data (reread≥5, oscillation≥2
+  // are almost never reached), so every flagged area collapsed to `unclassified`.
+  // The cohort median lets a flagged area's expressed signals actually elevate,
+  // so the rule engine's specific-cause gates can fire. `mode` is consistent
+  // across the batch (the scorer picks one); default to bootstrap on empty input.
+  const mode = records[0]?.mode ?? 'bootstrap';
+  const cohortMedians =
+    mode === 'percentile' ? computeCohortMedians(records) : null;
   const byArea = new Map<string, AreaAccum>();
 
   for (const rec of records) {
@@ -160,9 +177,22 @@ export function buildProfiles(
         continue;
       }
       medians[spec.name] = med;
-      // `spec.field` is the bootstrap_thresholds key (numbers in this branch).
-      const threshold = thresholds[spec.field] as number;
-      elevated[spec.name] = med >= threshold;
+      if (mode === 'percentile' && cohortMedians !== null) {
+        // Elevate when the area's median is STRICTLY above the cohort median:
+        // the area expresses this signal more than a typical session in this
+        // repo. A sparse cohort (median 0) therefore elevates any area that
+        // actually has the signal (median > 0) — the right call, since "more
+        // than typical" is "present at all" when typical is 0. The cohort median
+        // is guaranteed non-null here (the area's records are a subset of the
+        // cohort, so a non-null area median implies a non-null cohort median);
+        // the `null` guard is defensive and degrades to no elevation.
+        const cohort = cohortMedians[spec.field];
+        elevated[spec.name] = cohort === null ? false : med > cohort;
+      } else {
+        // Bootstrap mode: absolute floor (unchanged from pre-#32 behaviour).
+        const threshold = thresholds[spec.field] as number;
+        elevated[spec.name] = med >= threshold;
+      }
     }
 
     profiles.push({
@@ -178,6 +208,28 @@ export function buildProfiles(
   // Deterministic ordering: key ascending (lexical).
   profiles.sort((a, b) => (a.key < b.key ? -1 : a.key > b.key ? 1 : 0));
   return profiles;
+}
+
+/**
+ * Per-signal cohort medians across ALL records (the repo's sessions — the same
+ * set the scorer ranked), for percentile-mode elevation (#32). Numeric signals
+ * median over non-null values (null when every record is null); abandonment is
+ * excluded (it keeps absolute-threshold elevation in both modes). The result is
+ * keyed by `SignalValues` field (e.g. `wall_clock_per_line_ms`), matching
+ * `SIGNAL_SPECS[*].field` so the elevation loop can look it up directly.
+ */
+function computeCohortMedians(
+  records: StruggleRecord[],
+): Record<string, number | null> {
+  const out: Record<string, number | null> = {};
+  for (const spec of SIGNAL_SPECS) {
+    if (spec.kind === 'boolean') continue; // abandonment: absolute threshold, not cohorted
+    const values = records
+      .map((r) => r.signals[spec.field] as number | null)
+      .filter((v): v is number => v !== null);
+    out[spec.field] = median(values);
+  }
+  return out;
 }
 
 /** Median of a numeric array. Returns null only for empty input. */

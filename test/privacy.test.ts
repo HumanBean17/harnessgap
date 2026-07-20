@@ -174,7 +174,7 @@ describe('privacy (c): warnings are integers with no path/prose; safety fixtures
     expect(result.sessionCount).toBe(0);
   });
 
-  it('unresolvable cwd → unresolvable_cwd >= 1, session skipped', async () => {
+  it('unresolvable cwd → session skipped; count scoped to the repo (#31)', async () => {
     const { repo, claudeDir } = setupTempRepo();
     // Write a transcript with cwd pointing to a nonexistent path.
     const badCwd = '/nonexistent/harnessgap/privacy-test-' + Date.now();
@@ -186,11 +186,13 @@ describe('privacy (c): warnings are integers with no path/prose; safety fixtures
     }));
 
     const result = await runScan({ repo, claudeDir });
-    expect(result.warnings.unresolvable_cwd).toBeGreaterThanOrEqual(1);
-    // The unresolvable reason is counted once; skipped_sessions is reserved for
-    // other skip reasons (no double-count in the warnings line).
-    expect(result.warnings.skipped_sessions).toBe(0);
+    // The bad session is skipped (never scanned — no content leak).
     expect(result.sessionCount).toBe(0);
+    // skipped_sessions is reserved for other skip reasons (no double-count).
+    expect(result.warnings.skipped_sessions).toBe(0);
+    // Under #31 scoping the bad cwd (unrelated to `repo`) is NOT attributed to
+    // this repo's warnings — it would only surface in a machine-wide scan.
+    expect(result.warnings.unresolvable_cwd).toBe(0);
   });
 
   it('oversized line (>1MB) → oversized_lines >= 1, line not parsed', async () => {

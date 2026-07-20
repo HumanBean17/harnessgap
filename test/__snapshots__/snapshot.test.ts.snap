@@ -8,12 +8,12 @@ BASELINE — elevated (acute) · severity: unrated
   the typical session orients broadly before acting — worth investigating (cause undiagnosed)
 
 AREA                             |  FLAGGED |  MEAN SCORE | TOP SIGNALS
-src/auth                         |        1 |        47.8 | wall_clock_per_line(520s), corrections(2), oscillation(2)
-src/util                         |        1 |        29.9 | wall_clock_per_line(1127s), explore_ratio(3.3), corrections(2)
-src/payments                     |        1 |        29.9 | wall_clock_per_line(1300s), corrections(2), failure_streak(1)
+src/auth                         |        1 |        47.8 | wall_clock_per_line(300s), corrections(2), oscillation(2)
+src/util                         |        1 |        29.9 | wall_clock_per_line(300s), explore_ratio(3.3), corrections(2)
+src/payments                     |        1 |        29.9 | wall_clock_per_line(300s), corrections(2), failure_streak(1)
 src/billing                      |        1 |        29.9 | wall_clock_per_line(50s), explore_ratio(25.0), reread(5)
 src/config                       |        1 |        29.9 | wall_clock_per_line(4s), reread(5), corrections(2)
-src/db                           |        1 |        29.9 | wall_clock_per_line(1200s), explore_ratio(10.0), reread(1)
+src/db                           |        1 |        29.9 | wall_clock_per_line(300s), explore_ratio(10.0), reread(1)
 src/api                          |        1 |        22.4 | wall_clock_per_line(50s), explore_ratio(25.0), abandonment(yes)
 7 areas flagged · 3 unflagged · 0 unlocalized · bootstrap: 12 sessions"
 `;
@@ -26,12 +26,12 @@ BASELINE — elevated (acute) · severity: unrated
   the typical session orients broadly before acting — worth investigating (cause undiagnosed)
 
 AREA                             |  FLAGGED |  MEAN SCORE |                     CAUSE | TOP SIGNALS
-src/auth                         |        1 |        47.8 |                         - | wall_clock_per_line(520s), corrections(2), oscillation(2)
-src/util                         |        1 |        29.9 |                         - | wall_clock_per_line(1127s), explore_ratio(3.3), corrections(2)
-src/payments                     |        1 |        29.9 |                         - | wall_clock_per_line(1300s), corrections(2), failure_streak(1)
+src/auth                         |        1 |        47.8 |                         - | wall_clock_per_line(300s), corrections(2), oscillation(2)
+src/util                         |        1 |        29.9 |                         - | wall_clock_per_line(300s), explore_ratio(3.3), corrections(2)
+src/payments                     |        1 |        29.9 |                         - | wall_clock_per_line(300s), corrections(2), failure_streak(1)
 src/billing                      |        1 |        29.9 |                         - | wall_clock_per_line(50s), explore_ratio(25.0), reread(5)
 src/config                       |        1 |        29.9 |                         - | wall_clock_per_line(4s), reread(5), corrections(2)
-src/db                           |        1 |        29.9 |                         - | wall_clock_per_line(1200s), explore_ratio(10.0), reread(1)
+src/db                           |        1 |        29.9 |                         - | wall_clock_per_line(300s), explore_ratio(10.0), reread(1)
 src/api                          |        1 |        22.4 |                         - | wall_clock_per_line(50s), explore_ratio(25.0), abandonment(yes)
 7 areas flagged · 3 unflagged · 0 unlocalized · bootstrap: 12 sessions"
 `;
