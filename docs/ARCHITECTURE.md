@@ -416,7 +416,8 @@ stream errors are skipped and counted, never thrown (`src/adapter/stream.ts:127`
 - **Diagnoser tests** (Slice 4) — `test/classify-util.test.ts` (cmd/file
   catalogs + precedence); `test/evidence.test.ts` + `test/detector-evidence.test.ts`
   (bucketing + opt-in wiring in the detector); `test/diagnose-profile.test.ts`
-  (grouping, medians, mode-independent elevation, evidence sums);
+  (grouping, medians, bootstrap-mode elevation, evidence sums) +
+  `test/diagnose.test.ts` (i) (percentile-mode cohort-median elevation, #32);
   `test/repo-context.test.ts` (doc-match hit/miss, missing dir fail-open,
   path-confinement, symlink rejection); `test/classify.test.ts` (each cause's
   gate + the selection order + tie-break + confidence floor + doc-boost);
@@ -574,9 +575,10 @@ the specific-cause gates below can fire on real data.
 5. Else → `unclassified`.
 
 `confidence` for a specific cause is the signature score (the doc boost applies
-to `refactor-flag` only); for `inherent-complexity` it is proportional to
-`wall_clock_per_line_ms` capped at `2 × bootstrap_thresholds.wall_clock_per_line_ms`;
-for `unclassified` it is `0`.
+to `refactor-flag` only); for `inherent-complexity` it is the unit's
+`wall_clock_per_line_ms` median (winsorized at
+`bootstrap_thresholds.wall_clock_per_line_ms` since #33, so always ≤ the
+threshold) divided by that threshold → [0,1]; for `unclassified` it is `0`.
 
 ### Fail-open
 

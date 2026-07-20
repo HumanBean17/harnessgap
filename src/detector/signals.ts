@@ -219,7 +219,10 @@ function computeWallClockPerLine(events: NormalizedEvent[], cfg: Config): number
   const durationMs = Date.parse(events[events.length - 1].t) - Date.parse(events[0].t);
   const raw = durationMs / totalEditedLines;
   const cap = cfg.detector.bootstrap_thresholds.wall_clock_per_line_ms;
-  return Math.min(raw, cap);
+  // Clamp to [0, cap]: the upper bound winsorizes the near-zero-edit tail
+  // (issue #33); the lower bound guards against a negative span from
+  // out-of-order event timestamps (clock skew) passing through uncapped.
+  return Math.max(0, Math.min(raw, cap));
 }
 
 /** Case-insensitive substring match of any pattern against a scrubbed cmd. */

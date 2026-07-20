@@ -220,5 +220,14 @@ describe('computeSignals — part 2 (abandonment, oscillation, wall_clock_per_li
       toolCall(iso(600_000), 'read', { files: ['x.ts'] }),
     ];
     expect(computeSignals(sane, cfg()).wall_clock_per_line_ms).toBe(60_000);
+
+    // Boundary: raw exactly at the cap (300000ms/1 line) → unchanged (== cap).
+    // This is the load-bearing case for the trip-preservation invariant
+    // (raw >= threshold iff min(raw, threshold) >= threshold).
+    const atCap: NormalizedEvent[] = [
+      toolCall(iso(0), 'edit', { files: ['x.ts'], lines_changed: 1 }),
+      toolCall(iso(300_000), 'read', { files: ['x.ts'] }),
+    ];
+    expect(computeSignals(atCap, cfg()).wall_clock_per_line_ms).toBe(cap);
   });
 });

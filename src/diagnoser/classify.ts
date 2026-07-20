@@ -65,8 +65,13 @@ const PRECEDENCE: readonly Cause[] = [
 /** Score boost applied to refactor-flag when repoContext.docExists. */
 const REFACTOR_DOC_BOOST = 0.2;
 
-/** Fraction of bootstrap_threshold that maps to inherent-complexity conf 1.0. */
-const EXPENSE_CONFIDENCE_CAP_FACTOR = 2;
+/**
+ * The wall_clock_per_line bootstrap threshold also serves as the signal's
+ * winsorization cap (issue #33), so a unit's median is always ≤ the threshold.
+ * Dividing by the threshold (factor 1) maps that [0, threshold] range onto
+ * inherent-complexity confidence [0, 1]: at the cap → 1.0.
+ */
+const EXPENSE_CONFIDENCE_CAP_FACTOR = 1;
 
 /**
  * Pure entry point. Returns a `Diagnosis` for one unit. Selection order is
@@ -216,9 +221,11 @@ function signatureScore(elevated: Record<SignalName, boolean>): number {
 
 /**
  * Confidence for the inherent-complexity cause: proportional to wall_clock
- * expense, clamped to [0,1]. At the bootstrap threshold → 0.5; at 2x threshold
- * → 1.0. wall_clock_per_line_ms is null only when not elevated (and the cause
- * cannot fire then), so the null branch is defensive.
+ * expense, clamped to [0,1]. Because `wall_clock_per_line_ms` is winsorized at
+ * the bootstrap threshold (issue #33), a unit's median is always ≤ threshold;
+ * dividing by the threshold maps that onto [0,1] — at the cap (threshold) →
+ * 1.0, at 0 → 0. `wall_clock_per_line_ms` is null only when not elevated (and
+ * the cause cannot fire then), so the null branch is defensive.
  */
 function expenseConfidence(profile: UnitProfile, cfg: Config): number {
   const ms = profile.medians.wall_clock_per_line;

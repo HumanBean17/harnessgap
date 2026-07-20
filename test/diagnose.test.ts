@@ -426,4 +426,44 @@ describe('diagnoseUnits', () => {
     expect(bootOut).toHaveLength(1);
     expect(bootOut[0].cause).toBe('unclassified');
   });
+
+  it('(j) #32 elevation uses STRICT > cohort median (equal median does not elevate)', () => {
+    // Every record has reread === 1, so the cohort reread median is 1 AND the
+    // struggling area's reread median is 1 — equal. Under strict `>` reread does
+    // NOT elevate, so the `doc` gate (which requires reread elevated) stays
+    // closed even though explore_ratio is above-cohort. If the operator
+    // regressed to `>=`, reread would elevate and `doc` would fire. This pins
+    // the strict-`>` semantics that test (i) (all-strictly-above) could not.
+    const repo = makeRepo(); // no docs/ → docExists=false
+    const all: StruggleRecord[] = Array.from({ length: 25 }, (_, i) =>
+      mkRecord({
+        session_id: `base${i}`,
+        flagged: false,
+        signals: zeroSignals({ reread: 1, explore_ratio: 0.1, wall_clock_per_line_ms: 10_000 }),
+      }),
+    ).concat(
+      Array.from({ length: 5 }, (_, i) =>
+        mkRecord({
+          session_id: `strug${i}`,
+          score_pct: 90,
+          areas: [{ key: 'src/x', weight: 1 }],
+          signals: zeroSignals({
+            reread: 1, // === cohort median (1) → must NOT elevate under strict >
+            explore_ratio: 1.0,
+            corrections: 3,
+            oscillation: 2,
+            failure_streak: 2,
+            wall_clock_per_line_ms: 50_000,
+          }),
+        }),
+      ),
+    );
+    const records = all.map((r) => ({ ...r, mode: 'percentile' as const }));
+    const out = diagnoseUnits(records, CFG, repo);
+    expect(out).toHaveLength(1);
+    // reread not elevated → doc gate closed → NOT doc. (wall_clock elevated +
+    // meanScore 90 >= score_floor → inherent-complexity is what fires instead.)
+    expect(out[0].cause).not.toBe('doc');
+    expect(out[0].cause).toBe('inherent-complexity');
+  });
 });

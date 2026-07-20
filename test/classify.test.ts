@@ -231,6 +231,22 @@ describe('classify', () => {
     expect(d.rationale.length).toBeLessThan(200);
   });
 
+  it("(e') realistic post-#33 path: median at the winsorization cap (threshold) -> conf 1.0", () => {
+    // #33 winsorizes wall_clock_per_line_ms at the bootstrap threshold, so the
+    // largest median the real pipeline can produce IS the threshold (300000).
+    // expenseConfidence divides by the threshold (factor 1), so the cap maps to
+    // confidence 1.0 — the full [0,1] range stays reachable post-cap (a prior
+    // factor of 2 capped it at 0.5).
+    const profile = mkProfile({
+      meanScore: 80,
+      medians: { wall_clock_per_line: 300000 },
+      elevated: { wall_clock_per_line: true },
+    });
+    const d = classify(profile, mkContext(), CFG);
+    expect(d.cause).toBe('inherent-complexity');
+    expect(d.confidence).toBe(1);
+  });
+
   it('(f) nothing elevated but flagged -> unclassified, confidence 0', () => {
     const profile = mkProfile({});
     const d = classify(profile, mkContext(), CFG);

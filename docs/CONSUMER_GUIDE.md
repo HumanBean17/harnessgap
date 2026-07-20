@@ -188,7 +188,8 @@ The summary line reports flagged / unflagged / unlocalized area counts and the
 bootstrap session count (equal to `session_count` only in bootstrap mode). The
 warnings line appears only when at least one warning category is non-zero.
 `unresolvable_cwd` is scoped to the requested repo (only sessions whose cwd lived
-under it); with no `--repo` and an unresolvable cwd it is machine-wide.
+under it); with no `--repo` and a `process.cwd()` that isn't in a git repo, it is
+machine-wide.
 
 ### JSON envelope (`--json`)
 

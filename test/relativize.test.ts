@@ -51,6 +51,13 @@ describe('stripWorktreePrefix', () => {
       '.claude/worktrees/feat-xyz',
     );
   });
+
+  it('passes a .worktrees root (bare, no name/rest) through unchanged', () => {
+    // Symmetric no-match guard for the #30 alternation branch: `.worktrees`
+    // alone and `.worktrees/<name>` (no trailing path) must not be stripped.
+    expect(stripWorktreePrefix('.worktrees')).toBe('.worktrees');
+    expect(stripWorktreePrefix('.worktrees/feat-add')).toBe('.worktrees/feat-add');
+  });
 });
 
 describe('relativizeFilePath', () => {
