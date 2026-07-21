@@ -278,7 +278,7 @@ function runCli(
 }
 
 describe('harnessgap CLI harness flags + widened init (Task 9)', () => {
-  it('1. scan --harness qwen-code --harness-dir <root> → exit 0, flag accepted (chats/ dispatch is Task 10)', async () => {
+  it('1. scan --harness qwen-code --harness-dir <root> → exit 0, flag accepted, chats/ dispatch yields the seeded session', async () => {
     const { repo, qwenDir } = setupQwenFixture();
     const { stdout, stderr, code } = await runCli([
       'scan',
@@ -291,12 +291,13 @@ describe('harnessgap CLI harness flags + widened init (Task 9)', () => {
     ]);
 
     // Task 9 surface: flag is accepted (no unknown-option exit), no conflict
-    // false-positive. Task 10 wires chats/ discovery + qwen streamSession; until
-    // then the legacy Claude-layout discovery under <qwenDir>/projects/*/ finds
-    // 0 sessions (Claude layout doesn't enter chats/).
+    // false-positive. Task 10 wires chats/ discovery + qwen streamSession; the
+    // chats/-layout fixture yields exactly the one seeded session. (Pre-Task-10
+    // this case reported 0 sessions because the legacy Claude-layout discovery
+    // does not enter chats/.)
     expect(code).toBe(0);
     expect(stderr).toBe('');
-    expect(stdout).toContain('0 sessions');
+    expect(stdout).toContain('1 sessions');
   });
 
   it('2. scan --claude-dir <root> (alias) → exit 0, Claude layout discovered, leaderboard shows src/billing', async () => {
@@ -352,10 +353,11 @@ describe('harnessgap CLI harness flags + widened init (Task 9)', () => {
     ]);
 
     // Task 9 surface: precedence resolves harness from config (no flag, no
-    // conflict). Task 10 wires chats/ dispatch; until then 0 sessions are found.
+    // conflict). Task 10 wires chats/ dispatch; the chats/-layout fixture
+    // yields exactly the one seeded session.
     expect(code).toBe(0);
     expect(stderr).toBe('');
-    expect(stdout).toContain('0 sessions');
+    expect(stdout).toContain('1 sessions');
   });
 
   it('5. init qwen / init gigacode / init wat — writes + unsupported-agent error', async () => {

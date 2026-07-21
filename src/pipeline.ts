@@ -42,8 +42,7 @@
 
 import { loadConfig, parseDuration, ConfigError } from './config.js';
 import * as path from 'node:path';
-import { discoverTranscripts, defaultClaudeDir } from './walk.js';
-import { streamSession } from './adapter/stream.js';
+import { resolveHarness, discoverForSpec } from './adapter/index.js';
 import { resolveMainRepo, resolveRepo } from './git.js';
 import type { RepoResolution } from './git.js';
 import { relativizeEnvelopeFiles } from './relativize.js';
@@ -59,6 +58,7 @@ import type {
   Config,
   Diagnosis,
   HarnessId,
+  HarnessSpec,
   NormalizedEnvelope,
   ReflectFinding,
   RepoFinding,
@@ -89,18 +89,19 @@ export interface ScanOptions {
    * CLI resolves this per the documented precedence (--harness flag →
    * config.harness → 'claude-code') BEFORE calling runScan; this field threads
    * the resolution through. Task 10 consumes it to pick the spec/streamSession.
-   * When absent, behavior is unchanged (Claude Code adapter, byte-identical to
-   * pre-slice output).
+   * When absent, runScan falls back to `config.harness` (itself defaulting to
+   * 'claude-code'), so bare `harnessgap scan` is byte-identical to pre-slice
+   * output.
    */
   harness?: HarnessId;
   /**
    * Qwen+GigaCode slice Task 9: the harness config directory to discover
    * transcripts under, when the user passed --harness-dir (or the equivalent
    * --claude-dir alias). Mirrors `claudeDir` for the new flag. Task 10 consumes
-   * it via `discoverForSpec(spec, harnessDir)`; until then the legacy path uses
-   * `claudeDir` (which the CLI sets from whichever of --harness-dir / --claude-dir
-   * was provided) so the discovery root is correct regardless of which flag was
-   * used. When absent, behavior is unchanged.
+   * it via `discoverForSpec(spec, harnessDir ?? claudeDir)` — `harnessDir`
+   * wins, the legacy `claudeDir` is the fallback so direct API callers
+   * (tests, embeddings) that still pass `claudeDir` keep working unchanged.
+   * When neither is set, the spec's defaultRootDir() applies.
    */
   harnessDir?: string;
 }
@@ -133,9 +134,28 @@ export async function runScan(opts: ScanOptions): Promise<ScanResult> {
   // 1. Load config (ConfigError propagates — not caught here).
   const cfg = loadConfig(opts.configPath);
 
-  // 2. Discover transcripts.
-  const claudeDir = opts.claudeDir ?? defaultClaudeDir();
-  const { files, symlinks_rejected } = discoverTranscripts(claudeDir);
+  // 1b. Resolve the harness spec ONCE at the top — flag wins, else config
+  //     (Task 8; defaults to 'claude-code' via DEFAULT_CONFIG), else the
+  //     'claude-code' literal belt-and-suspenders (cfg.harness is typed as a
+  //     required field but the belt keeps the contract if a future schema
+  //     change makes it optional). The spec carries streamSession + layout
+  //     so discovery and streaming both route through it. `cwd` is also
+  //     surfaced on StreamResult but stays unused here (the pipeline resolves
+  //     repos from the full `cwds` list so a since-deleted representative cwd
+  //     does not lose the session).
+  const harnessId: HarnessId = opts.harness ?? cfg.harness ?? 'claude-code';
+  const spec = resolveHarness(harnessId);
+
+  // 2. Discover transcripts via the spec — rootOverride is the unified dir
+  //    resolution (harnessDir from --harness-dir, else the legacy claudeDir
+  //    from --claude-dir). When neither is set, the spec's defaultRootDir()
+  //    applies. This unifies the T9 dir-precedence minor at the pipeline layer
+  //    (both flags' resolutions used to disagree in the CLI threading; now
+  //    they collapse to harnessDir ?? claudeDir here, and the spec's layout
+  //    decides the on-disk shape: chats/ subdir for qwen/gigacode, flat for
+  //    claude).
+  const rootOverride = opts.harnessDir ?? opts.claudeDir;
+  const { files, symlinks_rejected } = discoverForSpec(spec, rootOverride);
 
   const warnings: Warnings = {
     malformed_lines: 0,
@@ -156,7 +176,7 @@ export async function runScan(opts: ScanOptions): Promise<ScanResult> {
   const unresolved: { cwds: string[] }[] = [];
 
   for (const file of files) {
-    const { envelope, cwds, warnings: streamWarnings } = await streamSession(file);
+    const { envelope, cwds, warnings: streamWarnings } = await spec.streamSession(file);
     warnings.malformed_lines += streamWarnings.malformed_lines;
     warnings.oversized_lines += streamWarnings.oversized_lines;
     warnings.truncated_sessions += streamWarnings.truncated_sessions;
@@ -371,9 +391,10 @@ export interface ReflectOptions {
   configPath?: string;
   claudeDir?: string;
   /**
-   * Qwen+GigaCode slice Task 9: harness id + harness dir threaded from the CLI
-   * (mirrors ScanOptions). Task 11 wires the reflect dispatch through the spec;
-   * until then these fields are unused by the pipeline and behavior is unchanged.
+   * Qwen+GigaCode slice Task 9/10: harness id + harness dir threaded from the
+   * CLI (mirrors ScanOptions). Task 10 wires reflect dispatch through the spec
+   * (discovery for --latest + streamSession for --transcript); the harness
+   * resolution precedence matches runScan (flag → config → 'claude-code').
    */
   harness?: HarnessId;
   harnessDir?: string;
@@ -395,6 +416,13 @@ export async function runReflect(opts: ReflectOptions): Promise<ReflectResult> {
   // 1. Load config (ConfigError propagates — not caught here).
   const cfg = loadConfig(opts.configPath);
 
+  // 1b. Resolve the harness spec ONCE at the top (same precedence as runScan):
+  //     flag → config → 'claude-code'. The spec routes both discovery
+  //     (--latest walks every transcript under the harness root) and the
+  //     single-file stream (--transcript) through the right adapter + layout.
+  const harnessId: HarnessId = opts.harness ?? cfg.harness ?? 'claude-code';
+  const spec = resolveHarness(harnessId);
+
   // One git-cache threaded across every resolution in this call (mirrors
   // runScan): repo lookups repeat across transcripts and the target filter.
   const cache = new Map<string, RepoResolution | null>();
@@ -406,11 +434,11 @@ export async function runReflect(opts: ReflectOptions): Promise<ReflectResult> {
   let cwds: string[];
   let stampedCheckoutRoot: string | null = null;
   if (opts.transcript !== undefined) {
-    const streamed = await streamSession(opts.transcript);
+    const streamed = await spec.streamSession(opts.transcript);
     envelope = streamed.envelope;
     cwds = streamed.cwds;
   } else if (opts.latest) {
-    const picked = await pickLatestEnvelope(opts, cache);
+    const picked = await pickLatestEnvelope(opts, spec, cache);
     envelope = picked.envelope;
     cwds = picked.cwds;
     stampedCheckoutRoot = picked.checkoutRoot;
@@ -423,8 +451,10 @@ export async function runReflect(opts: ReflectOptions): Promise<ReflectResult> {
   // 3. Detect + build the finding (shared by both resolution modes), then
   //    format. Fail-open: a null envelope (--latest found nothing) or an
   //    unresolvable repo yields a trip:false finding, which the hook-stop
-  //    formatter renders as `{}`.
-  const finding = buildFindingFromEnvelope(envelope, cwds, cfg, cache, stampedCheckoutRoot);
+  //    formatter renders as `{}`. The harnessId threads through to the
+  //    degenerate empty-envelope stub so its agent stamp matches the resolved
+  //    harness (no hardcoded 'claude-code' literal remains in this file).
+  const finding = buildFindingFromEnvelope(envelope, cwds, cfg, cache, stampedCheckoutRoot, harnessId);
 
   let output: string;
   if (opts.format === 'hook-stop') {
@@ -449,6 +479,7 @@ export async function runReflect(opts: ReflectOptions): Promise<ReflectResult> {
  */
 async function pickLatestEnvelope(
   opts: ReflectOptions,
+  spec: HarnessSpec,
   cache: Map<string, RepoResolution | null>,
 ): Promise<{ envelope: NormalizedEnvelope | null; cwds: string[]; checkoutRoot: string | null }> {
   // targetRepo: normalize the filter through the resolver (like runScan) so
@@ -456,17 +487,20 @@ async function pickLatestEnvelope(
   // neither opts.repo nor process.cwd() resolves → nothing can match.
   const targetRepo = resolveMainRepo(opts.repo ?? process.cwd(), cache);
 
-  const claudeDir = opts.claudeDir ?? defaultClaudeDir();
-  const { files } = discoverTranscripts(claudeDir);
+  // Discovery routes through the spec — same unified dir resolution as runScan
+  // (harnessDir ?? claudeDir, else spec.defaultRootDir()). The spec's layout
+  // selects chats/ vs flat.
+  const rootOverride = opts.harnessDir ?? opts.claudeDir;
+  const { files } = discoverForSpec(spec, rootOverride);
 
-  // discoverTranscripts sorts lexicographically (NOT by recency), so max
+  // discoverForSpec sorts lexicographically (NOT by recency), so max
   // started_at is selected here; on ties the first-seen (smallest path) wins.
   let best:
     | { envelope: NormalizedEnvelope; cwds: string[]; repo: string; checkoutRoot: string | null; started: number }
     | null = null;
 
   for (const file of files) {
-    const { envelope, cwds } = await streamSession(file);
+    const { envelope, cwds } = await spec.streamSession(file);
 
     // Resolve this session's main repo (try each cwd in order, like runScan).
     let repo: string | null = null;
@@ -521,11 +555,12 @@ function buildFindingFromEnvelope(
   cfg: Config,
   cache: Map<string, RepoResolution | null>,
   stampedCheckoutRoot: string | null = null,
+  harnessId: HarnessId = 'claude-code',
 ): ReflectFinding {
   // --latest found no session for the repo → safe trip:false stub.
   if (envelope === null) {
     return buildReflectFinding({
-      record: degenerateRecord(emptyEnvelope()),
+      record: degenerateRecord(emptyEnvelope(harnessId)),
       zero_edit: true,
     });
   }
@@ -570,12 +605,18 @@ function buildFindingFromEnvelope(
   }
 }
 
-/** Minimal empty envelope for the no-session fail-open path (no records). */
-function emptyEnvelope(): NormalizedEnvelope {
+/**
+ * Minimal empty envelope for the no-session fail-open path (no records). The
+ * `harnessId` parameter threads the resolved harness through so the envelope's
+ * agent stamp matches the harness the user asked reflect to use (no hardcoded
+ * 'claude-code' literal — the spec's streamSession already stamps agent on
+ * real envelopes, and this stub mirrors that contract for the degenerate path).
+ */
+function emptyEnvelope(harnessId: HarnessId = 'claude-code'): NormalizedEnvelope {
   return {
     schema_version: 1,
     session_id: '',
-    agent: 'claude-code',
+    agent: harnessId,
     repo: '',
     started_at: '',
     duration_ms: 0,
