@@ -58,6 +58,7 @@ import type {
   BaselineAssessment,
   Config,
   Diagnosis,
+  HarnessId,
   NormalizedEnvelope,
   ReflectFinding,
   RepoFinding,
@@ -82,6 +83,26 @@ export interface ScanOptions {
    * output stays byte-identical to Slice 3.
    */
   diagnose?: boolean;
+  /**
+   * Qwen+GigaCode slice Task 9: the resolved harness id (claude-code |
+   * qwen-code | gigacode) the CLI wants the pipeline to dispatch through. The
+   * CLI resolves this per the documented precedence (--harness flag →
+   * config.harness → 'claude-code') BEFORE calling runScan; this field threads
+   * the resolution through. Task 10 consumes it to pick the spec/streamSession.
+   * When absent, behavior is unchanged (Claude Code adapter, byte-identical to
+   * pre-slice output).
+   */
+  harness?: HarnessId;
+  /**
+   * Qwen+GigaCode slice Task 9: the harness config directory to discover
+   * transcripts under, when the user passed --harness-dir (or the equivalent
+   * --claude-dir alias). Mirrors `claudeDir` for the new flag. Task 10 consumes
+   * it via `discoverForSpec(spec, harnessDir)`; until then the legacy path uses
+   * `claudeDir` (which the CLI sets from whichever of --harness-dir / --claude-dir
+   * was provided) so the discovery root is correct regardless of which flag was
+   * used. When absent, behavior is unchanged.
+   */
+  harnessDir?: string;
 }
 
 export interface ScanResult {
@@ -349,6 +370,13 @@ export interface ReflectOptions {
   format?: 'json' | 'hook-stop';
   configPath?: string;
   claudeDir?: string;
+  /**
+   * Qwen+GigaCode slice Task 9: harness id + harness dir threaded from the CLI
+   * (mirrors ScanOptions). Task 11 wires the reflect dispatch through the spec;
+   * until then these fields are unused by the pipeline and behavior is unchanged.
+   */
+  harness?: HarnessId;
+  harnessDir?: string;
 }
 
 export interface ReflectResult {
