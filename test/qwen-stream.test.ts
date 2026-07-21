@@ -179,6 +179,51 @@ describe('mergeQwenItems — matching contract', () => {
     expect(ev.interrupted).toBe(false);
   });
 
+  it('3a. no tool_result + telemetry success:true → ok:true (telemetry fallback per §5.3 row 7)', () => {
+    // A truncated session: the tool_result was never written, but telemetry
+    // confirms the call succeeded. Without the telemetry fallback this call
+    // would wrongly degrade to ok:false and bias failure_streak.
+    const items: QwenParsedItem[] = [
+      toolCall('call_T', 'read_file', 'K', EMPTY_DIGEST, TS1),
+      telemetryTool('read_file', 'K', 15, true, TS2),
+      // NO tool_result — fallback path engages.
+    ];
+    const events = mergeQwenItems(items, META);
+    expect(events).toHaveLength(1);
+    const ev = events[0]!;
+    expect(ev.kind).toBe('tool_call');
+    expect(ev.ok).toBe(true); // telemetry.success === true → ok:true
+    expect(ev.duration_ms).toBe(15); // SAME telemetry consumed for duration
+  });
+
+  it('3b. no tool_result + telemetry success:false → ok:false (telemetry fallback carries failures)', () => {
+    const items: QwenParsedItem[] = [
+      toolCall('call_F', 'read_file', 'K', EMPTY_DIGEST, TS1),
+      telemetryTool('read_file', 'K', 12, false, TS2),
+      // NO tool_result — fallback engages and reports the failure honestly.
+    ];
+    const events = mergeQwenItems(items, META);
+    expect(events).toHaveLength(1);
+    const ev = events[0]!;
+    expect(ev.kind).toBe('tool_call');
+    expect(ev.ok).toBe(false); // telemetry.success === false → ok:false
+    expect(ev.duration_ms).toBe(12);
+  });
+
+  it('3c. tool_result authority wins over telemetry fallback (result present, telemetry disagrees)', () => {
+    // tool_result is the §6 authority: when it matches by callId, telemetry's
+    // success is ignored for `ok` (telemetry still drives duration_ms).
+    const items: QwenParsedItem[] = [
+      toolCall('call_X', 'read_file', 'K', EMPTY_DIGEST, TS1),
+      telemetryTool('read_file', 'K', 22, true, TS2), // telemetry says success
+      toolResult('call_X', false, TS3), // but tool_result says failure
+    ];
+    const events = mergeQwenItems(items, META);
+    expect(events).toHaveLength(1);
+    expect(events[0]!.ok).toBe(false); // tool_result wins
+    expect(events[0]!.duration_ms).toBe(22); // telemetry still drives duration
+  });
+
   it('4. interrupt between calls → call before interrupt interrupted:false, call after interrupted:true', () => {
     const items: QwenParsedItem[] = [
       toolCall('call_A', 'read_file', 'KA', EMPTY_DIGEST, TS1),

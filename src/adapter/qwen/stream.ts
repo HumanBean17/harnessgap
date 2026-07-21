@@ -4,9 +4,17 @@
 //   - mergeQwenItems(items, meta): NormalizedEvent[]  — PURE. Assembles parsed
 //     Qwen items into harness-agnostic NormalizedEvents per the matching
 //     contract pinned in the task-5 brief:
-//       * tool_call.ok          : callId-matched tool_result authority (true iff
-//                                 a matching result has ok:true; false if the
-//                                 matching result is ok:false OR no match).
+//       * tool_call.ok          : callId-matched tool_result is authoritative
+//                                 (true iff a matching result has ok:true; false
+//                                 if the matching result is ok:false). When NO
+//                                 tool_result matches by callId, falls back to
+//                                 the `success` of the telemetry matched by
+//                                 (toolName, argsKey) — the SAME telemetry
+//                                 consumed for duration_ms (spec §5.3 row 7) —
+//                                 and finally to false when no telemetry matches
+//                                 either. Without this fallback a truncated call
+//                                 (telemetry but no result) wrongly degrades to
+//                                 ok:false, biasing failure_streak.
 //       * tool_call.duration_ms : (toolName, argsKey)-matched telemetry_tool
 //                                 authority, searching items AFTER the call
 //                                 (0 if none).
@@ -93,7 +101,9 @@ export function mergeQwenItems(
   // Indices of telemetry_tool items already bound to a tool_call's duration, so
   // that two calls sharing `(toolName, argsKey)` pair to DISTINCT telemetries
   // in encounter order (first call → first telemetry, second call → second).
-  // See findDurationForCall.
+  // See findTelemetryForCall — the SAME Set also backs the `ok` telemetry
+  // fallback, so each call's duration_ms and (fallback) success resolve to one
+  // telemetry item.
   const consumedTelemetry = new Set<number>();
   // Interrupt taint: set by an `interrupt` item, cleared by the next user_msg.
   // A tool_call inherits the current flag — i.e., an interrupt marks all
@@ -149,14 +159,29 @@ export function mergeQwenItems(
     }
     if (item.kind === 'tool_call') {
       const tool = mapQwenToolKind(item.toolName);
-      const ok = findOkForCall(items, item.callId);
-      const duration_ms = findDurationForCall(
+      const toolResult = findToolResultForCall(items, item.callId);
+      const telemetry = findTelemetryForCall(
         items,
         i,
         item.toolName,
         item.argsKey,
         consumedTelemetry,
       );
+      // ok precedence (§6 tool_result authority; §5.3 row 7 telemetry fallback):
+      //   (1) matching tool_result by callId → its ok value (true on success,
+      //       false on any non-success status);
+      //   (2) NO matching tool_result → fall back to the `success` of the
+      //       telemetry matched by (toolName, argsKey) — the SAME telemetry
+      //       already consumed for duration_ms — so a call with telemetry but
+      //       no result (e.g. a truncated file) does not wrongly degrade to
+      //       ok:false and bias failure_streak;
+      //   (3) no telemetry either → false (preserves the unresolved contract).
+      const ok = toolResult.found
+        ? toolResult.ok
+        : telemetry.found
+          ? telemetry.success
+          : false;
+      const duration_ms = telemetry.durationMs;
       events.push({
         t: item.t,
         kind: 'tool_call',
@@ -181,34 +206,45 @@ export function mergeQwenItems(
 }
 
 /**
- * Scan all items for a tool_result with matching callId. Returns its `ok` value,
- * or false if none exists (unresolved → not-ok per the contract). The contract
- * pins callId as the authority for ok.
+ * Scan all items for a tool_result with matching callId. Returns
+ * `{found: true, ok}` when one exists (ok = its `status === 'success'`),
+ * `{found: false, ok: false}` otherwise. The caller falls back to telemetry
+ * `success` (§5.3 row 7) when `found` is false before degrading to `ok:false`.
+ * The contract pins callId as the authority for the tool_result branch (§6).
  */
-function findOkForCall(items: QwenParsedItem[], callId: string): boolean {
+function findToolResultForCall(
+  items: QwenParsedItem[],
+  callId: string,
+): { found: boolean; ok: boolean } {
   for (const it of items) {
-    if (it.kind === 'tool_result' && it.callId === callId) return it.ok;
+    if (it.kind === 'tool_result' && it.callId === callId) {
+      return { found: true, ok: it.ok };
+    }
   }
-  return false;
+  return { found: false, ok: false };
 }
 
 /**
- * Find the durationMs of the first UNCONSUMED telemetry_tool AFTER index `i`
- * whose (toolName, argsKey) matches this call; mark it consumed so the next
- * call with the same (toolName, argsKey) binds to the subsequent telemetry.
- * Returns 0 if none. The contract pins (toolName, argsKey) as the authority
- * for duration, scanning forward only — matches the real-data interleaving
- * (call → telemetry, in that order). Consumption tracking is what makes two
- * identical-args calls pair to DISTINCT telemetries in order rather than both
- * binding to the first.
+ * Find the first UNCONSUMED telemetry_tool AFTER index `i` whose
+ * (toolName, argsKey) matches this call; mark it consumed so the next call
+ * with the same (toolName, argsKey) binds to the subsequent telemetry in
+ * encounter order. Returns `{found, durationMs, success}` — `durationMs` and
+ * `success` come from the SAME telemetry item, so the caller resolves both
+ * `duration_ms` and the `ok` fallback (§5.3 row 7) from one source without a
+ * second scan. Returns `{found: false, durationMs: 0, success: false}` when
+ * no telemetry matches. The contract pins (toolName, argsKey) as the
+ * authority for the telemetry branch, scanning forward only — matches the
+ * real-data interleaving (call → telemetry, in that order). Consumption
+ * tracking is what makes two identical-args calls pair to DISTINCT telemetries
+ * in order rather than both binding to the first.
  */
-function findDurationForCall(
+function findTelemetryForCall(
   items: QwenParsedItem[],
   i: number,
   toolName: string,
   argsKey: string,
   consumedTelemetry: Set<number>,
-): number {
+): { found: boolean; durationMs: number; success: boolean } {
   for (let j = i + 1; j < items.length; j++) {
     if (consumedTelemetry.has(j)) continue;
     const it = items[j]!;
@@ -218,10 +254,10 @@ function findDurationForCall(
       it.argsKey === argsKey
     ) {
       consumedTelemetry.add(j);
-      return it.durationMs;
+      return { found: true, durationMs: it.durationMs, success: it.success };
     }
   }
-  return 0;
+  return { found: false, durationMs: 0, success: false };
 }
 
 // --- streamQwenSession (I/O) ---
@@ -237,7 +273,9 @@ function findDurationForCall(
  * 5000-event cap, or the 50 MB byte cap). This is a deliberate divergence from
  * Claude's streamSession, which only flags event/byte cap: a Qwen session with
  * a dropped oversized line has still lost data, which downstream signals must
- * be able to see. The detector already treats `truncated` as a confidence damp.
+ * be able to see. Flagging surfaces that data loss in `warnings` and on
+ * `StruggleRecord.truncated`; NO detector signal currently damps on it (the
+ * flag is available for future confidence adjustments).
  *
  * Returns the SAME `StreamResult` shape as Claude's `streamSession`
  * ({envelope, cwd, cwds, warnings}) so the pipeline (Task 10) can program
@@ -366,8 +404,9 @@ export async function streamQwenSession(filePath: string): Promise<StreamResult>
   }
 
   // Qwen-specific truncation rule: an oversized line means data was dropped.
-  // The detector treats `truncated` as a confidence damp; flagging it here
-  // surfaces the data loss rather than silently undercounting the session.
+  // Flagging surfaces the data loss in `warnings` and on StruggleRecord.truncated
+  // rather than silently undercounting the session (no detector signal currently
+  // damps on `truncated`; the flag is available for future use).
   if (oversized_lines > 0) truncated = true;
 
   // runtime.json work_dir fallback — only when no record carried cwd. The
