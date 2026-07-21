@@ -65,7 +65,8 @@ reuses the adapter and detector verbatim and only adds persistence.
 | `src/output/human.ts` | Pure human-readable leaderboard formatter (the default table). | `formatHuman` |
 | `src/output/calibrate.ts` | Pure calibrate builders: per-signal min/p50/p90/max + active threshold, for `--calibrate`. | `buildCalibrateObject`, `formatCalibrateTable` |
 | `src/output/hook.ts` | Pure session-end reflect builders: a `StruggleRecord` → `ReflectFinding` decision + the Claude Code `Stop` hook payload. No I/O, no node builtins; the only Claude-Code-specific code in the tree. | `buildReflectFinding`, `formatStopHookOutput` |
-| `src/init/claude.ts` | `harnessgap init claude` installer: writes the fail-open Stop-hook wrapper, idempotently merges `hooks.Stop` in `.claude/settings.json`, writes the `/reflect` command. Only `node:fs` + `node:path` (the wrapper's `child_process` lives in the emitted runtime artifact under `.claude/`, not in `src/`). | `initClaude` |
+| `src/init/claude.ts` | `harnessgap init claude` installer: writes the fail-open Stop-hook wrapper, idempotently merges `hooks.Stop` in `.claude/settings.json`, writes the `/reflect` command. Only `node:fs` + `node:path` (the wrapper's `child_process` lives in the emitted runtime artifact under `.claude/`, not in `src/`). `mergeStopHook` is exported so `src/init/qwen.ts` can reuse the dedup-by-command merge. | `initClaude`, `mergeStopHook` |
+| `src/init/qwen.ts` | `harnessgap init qwen` / `init gigacode` installer: mirrors `initClaude` — writes the same three artifacts (fail-open Stop-hook wrapper, idempotent `hooks.Stop` settings.json merge, `/reflect` command) under `<cwd>/.qwen/` (or `.gigacode/`). Reuses `CLI_PATH`, `buildWrapperSource`, and `mergeStopHook` from `src/init/claude.ts` (Qwen Code's Stop registration shape + payload are byte-identical to Claude's — a Claude Code fork; see file header for the research contract), and `formatStopHookOutput` from `src/output/hook.ts` unchanged. Only `node:fs` + `node:path`. | `initQwen`, `initGigacode` |
 
 ## 3. Pipeline
 
@@ -485,6 +486,16 @@ Writes three artifacts under `<cwd>/.claude/`:
    `ReflectFrame` (cost / missing context / one change with a path-verified
    repo-relative `target_path`) from a finding, present it, and emit
    `change.kind: "none"` when clean. The binary never authors a frame.
+
+**`init qwen` / `init gigacode` (`src/init/qwen.ts`)** mirrors this installer:
+the same three artifacts under `<cwd>/.qwen/` (or `.gigacode/`), the same
+fail-open wrapper, the same dedup-by-command `hooks.Stop` settings merge (Qwen
+Code's Stop registration shape and `{decision:'block',reason}` payload are
+byte-identical to Claude's — a Claude Code fork), and a `/reflect` command
+differing only in display name + memory file (`QWEN.md` / `GIGACODE.md`).
+Reuses `CLI_PATH`, `buildWrapperSource`, and `mergeStopHook` from
+`src/init/claude.ts`, and `formatStopHookOutput` from `src/output/hook.ts`
+unchanged — no duplication, no harness-parameterized renderer.
 
 ### Trip-gate sensitivity (dogfood, not a promise)
 
