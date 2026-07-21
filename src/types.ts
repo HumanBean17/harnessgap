@@ -94,9 +94,10 @@ export type HarnessId = 'claude-code' | 'qwen-code' | 'gigacode';
 
 /**
  * On-disk transcript layout for a harness. `projectsSegment` is the literal
- * directory name; `sessionSubdir` is optional (present for Claude Code's
- * `projects/<proj>/chats` layout, absent for flatter layouts); `extension`
- * is pinned to `.jsonl` for v1.
+ * directory name; `sessionSubdir` is optional (ABSENT for Claude Code's flat
+ * `projects/<proj>/*.jsonl` layout, PRESENT for the Qwen/GigaCode
+ * `projects/<proj>/chats/*.jsonl` layout); `extension` is pinned to `.jsonl`
+ * for v1. See `src/adapter/index.ts` CLAUDE_LAYOUT vs CHATS_LAYOUT.
  */
 export interface TranscriptLayout {
   projectsSegment: 'projects';
