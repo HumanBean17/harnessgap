@@ -81,31 +81,21 @@ interface ReflectOpts {
 }
 
 /**
- * Qwen+GigaCode slice Task 9: resolve the harness id + dir per the documented
- * precedence, applying the `--claude-dir` alias + conflict rule.
- *
- * Precedence for the harness id: `--harness` flag → `config.harness` →
- * `'claude-code'`. `--claude-dir` does NOT count as a harness flag — it is a
- * deprecated alias for `--harness claude-code --harness-dir <path>`, so it
- * contributes the dir AND implies claude-code for the alias's interpretation,
- * but an explicit `--harness` always wins.
- *
- * Conflict rule: passing `--claude-dir` together with `--harness qwen-code` or
- * `--gigacode` is a hard error (exit non-zero). `--claude-dir X --harness
- * claude-code` is allowed (redundant but consistent). `--claude-dir X
- * --harness-dir Y` is a redundant dir spec; `--harness-dir` wins, no error.
+ * Validate `--harness` against the closed HarnessId set and enforce the
+ * `--claude-dir` conflict rule (the alias implies claude-code, so combining
+ * it with a non-claude `--harness` is a hard error). Returns the validated
+ * flag value (or `undefined` when no flag was passed). Shared by scan + reflect.
  *
  * Dir resolution: `--harness-dir` wins, else `--claude-dir` (the alias).
  *
  * Throws ConfigError on conflict or unknown harness id — the caller surfaces
  * it via the standard stderr+exit-1 path.
  */
-function resolveHarnessForCommand(
+function validateHarnessFlags(
   harnessFlag: string | undefined,
   harnessDir: string | undefined,
   claudeDir: string | undefined,
-  cfgHarness: HarnessId,
-): { harness: HarnessId; harnessDir: string | undefined } {
+): { harness: HarnessId | undefined; harnessDir: string | undefined } {
   // Conflict: --claude-dir is an alias for --harness claude-code --harness-dir;
   // combining it with a non-claude --harness asks for two different harnesses.
   if (
@@ -122,20 +112,43 @@ function resolveHarnessForCommand(
   // help text lists the choices, but commander does not enforce them at parse
   // time, so a bad value reaches the action; turn it into a clear error here
   // rather than a silent fall-through or a downstream resolveHarness throw.
-  if (harnessFlag !== undefined && !HARNESS_CHOICES.includes(harnessFlag as HarnessId)) {
+  if (
+    harnessFlag !== undefined &&
+    !HARNESS_CHOICES.includes(harnessFlag as HarnessId)
+  ) {
     throw new ConfigError(
       `Unknown harness id: ${harnessFlag}. Supported: ${HARNESS_CHOICES.join(', ')}.`,
     );
   }
 
-  // Precedence: --harness flag → config.harness (already defaulted to
-  // 'claude-code' by loadConfig via DEFAULT_CONFIG).
-  const harness: HarnessId =
-    harnessFlag !== undefined ? (harnessFlag as HarnessId) : cfgHarness;
+  return {
+    harness: harnessFlag as HarnessId | undefined,
+    harnessDir: harnessDir ?? claudeDir,
+  };
+}
 
-  // Dir: --harness-dir wins, else the --claude-dir alias.
-  const resolvedDir = harnessDir ?? claudeDir;
-  return { harness, harnessDir: resolvedDir };
+/**
+ * Qwen+GigaCode slice Task 9: resolve the harness id + dir per the documented
+ * precedence for `scan`. Precedence for the harness id: `--harness` flag →
+ * `config.harness` → `'claude-code'` (the last is belt-and-suspenders;
+ * `cfg.harness` is always populated by `loadConfig` via `DEFAULT_CONFIG`).
+ * `--claude-dir` does NOT count as a harness flag — it is a deprecated alias
+ * for `--harness claude-code --harness-dir <path>`, so it contributes the dir
+ * AND implies claude-code for the alias's interpretation, but an explicit
+ * `--harness` always wins.
+ */
+function resolveHarnessForCommand(
+  harnessFlag: string | undefined,
+  harnessDir: string | undefined,
+  claudeDir: string | undefined,
+  cfgHarness: HarnessId,
+): { harness: HarnessId; harnessDir: string | undefined } {
+  const { harness, harnessDir: resolvedDir } = validateHarnessFlags(
+    harnessFlag,
+    harnessDir,
+    claudeDir,
+  );
+  return { harness: harness ?? cfgHarness, harnessDir: resolvedDir };
 }
 
 const program = new Command();
@@ -243,13 +256,20 @@ program
   )
   .action(async (opts: ReflectOpts) => {
     try {
-      // Same harness resolution as scan (no auto-detect until Task 11).
-      const cfg = loadConfig(opts.config);
-      const { harness, harnessDir } = resolveHarnessForCommand(
+      // Task 11: --harness flag wins; otherwise the pipeline sniffs the
+      // transcript file's shape (qwen gemini parts/functionCall vs claude
+      // content/tool_use) and auto-detects. Config `harness:` is NOT applied
+      // here for reflect — for --transcript the file is authoritative (the
+      // sniff runs inside runReflect); for --latest the pipeline falls back
+      // to cfg.harness itself (no single file to sniff). validateHarnessFlags
+      // still enforces the choice + the --claude-dir conflict before we
+      // dispatch, so user errors surface here with the same stderr+exit-1
+      // path as scan.
+      loadConfig(opts.config);
+      const { harness, harnessDir } = validateHarnessFlags(
         opts.harness,
         opts.harnessDir,
         opts.claudeDir,
-        cfg.harness,
       );
 
       const reflectOpts: ReflectOptions = {

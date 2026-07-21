@@ -387,12 +387,20 @@ export interface Diagnosis {
  * Session-end reflect finding: the pure decision artifact built from one
  * `StruggleRecord`. `trip` is the derived block decision; the record reference
  * is carried through unchanged. schema_version is pinned to 1.
+ *
+ * `agent` (Qwen+GigaCode slice Task 11): the harness id that produced this
+ * finding — either the `--harness` flag value or the auto-detected id (from
+ * sniffing the transcript's shape when `reflect --transcript <path>` is called
+ * without `--harness`). Mirrors `NormalizedEnvelope.agent` so reflect callers
+ * can identify the detected harness from the finding alone (the underlying
+ * `StruggleRecord` is harness-agnostic and does not surface it).
  */
 export interface ReflectFinding {
   schema_version: 1;
   session_id: string;
   repo: string;
   mode: ScoringMode;
+  agent: HarnessId;
   record: StruggleRecord;
   trip: boolean;
   zero_edit: boolean;

@@ -42,6 +42,7 @@
 
 import { loadConfig, parseDuration, ConfigError } from './config.js';
 import * as path from 'node:path';
+import { openSync, readSync, closeSync } from 'node:fs';
 import { resolveHarness, discoverForSpec } from './adapter/index.js';
 import { resolveMainRepo, resolveRepo } from './git.js';
 import type { RepoResolution } from './git.js';
@@ -416,11 +417,24 @@ export async function runReflect(opts: ReflectOptions): Promise<ReflectResult> {
   // 1. Load config (ConfigError propagates — not caught here).
   const cfg = loadConfig(opts.configPath);
 
-  // 1b. Resolve the harness spec ONCE at the top (same precedence as runScan):
-  //     flag → config → 'claude-code'. The spec routes both discovery
-  //     (--latest walks every transcript under the harness root) and the
-  //     single-file stream (--transcript) through the right adapter + layout.
-  const harnessId: HarnessId = opts.harness ?? cfg.harness ?? 'claude-code';
+  // 1b. Resolve the harness spec ONCE at the top. Task 11 precedence:
+  //       --harness flag → sniff(transcript) → 'claude-code' fallback.
+  //     The sniff only fires for --transcript (the file is right there, so it
+  //     is more authoritative than the config default). For --latest there is
+  //     no single file in hand to sniff, so the Task-10 precedence is
+  //     preserved (config → 'claude-code'). Config is NOT consulted for the
+  //     --transcript path: the file's shape wins over a config-pinned
+  //     default. `--harness <id>` always overrides the sniff.
+  let harnessId: HarnessId;
+  if (opts.harness !== undefined) {
+    harnessId = opts.harness;
+  } else if (opts.transcript !== undefined) {
+    harnessId = sniffHarnessFromTranscript(opts.transcript) ?? 'claude-code';
+  } else {
+    // --latest without a flag: no file to sniff, preserve Task-10 precedence.
+    // cfg.harness is always set (DEFAULT_CONFIG), the literal is belt-and-suspenders.
+    harnessId = cfg.harness ?? 'claude-code';
+  }
   const spec = resolveHarness(harnessId);
 
   // One git-cache threaded across every resolution in this call (mirrors
@@ -562,6 +576,7 @@ function buildFindingFromEnvelope(
     return buildReflectFinding({
       record: degenerateRecord(emptyEnvelope(harnessId)),
       zero_edit: true,
+      agent: harnessId,
     });
   }
 
@@ -586,7 +601,7 @@ function buildFindingFromEnvelope(
   }
 
   if (repo === '') {
-    return buildReflectFinding({ record: degenerateRecord(envelope), zero_edit });
+    return buildReflectFinding({ record: degenerateRecord(envelope), zero_edit, agent: harnessId });
   }
 
   // Detect step is guarded: a throw from relativize/detect (latent today — both
@@ -599,9 +614,9 @@ function buildFindingFromEnvelope(
     relativizeEnvelopeFiles(envelope, repo, checkoutRoot);
     const { records } = runDetector([envelope], cfg, true);
     const record = records[0] ?? degenerateRecord(envelope);
-    return buildReflectFinding({ record, zero_edit });
+    return buildReflectFinding({ record, zero_edit, agent: harnessId });
   } catch {
-    return buildReflectFinding({ record: degenerateRecord(envelope), zero_edit });
+    return buildReflectFinding({ record: degenerateRecord(envelope), zero_edit, agent: harnessId });
   }
 }
 
@@ -666,4 +681,119 @@ function degenerateRecord(envelope: NormalizedEnvelope): StruggleRecord {
 function isUnderRepo(cwd: string, repo: string): boolean {
   if (cwd === '' || repo === '') return false;
   return path.resolve(cwd).startsWith(repo + '/');
+}
+
+// --- Task 11: harness shape sniff -------------------------------------------
+//
+// Cheap read-only shape detection on a transcript file. The first parseable
+// non-empty line that carries a harness discriminator identifies the harness:
+//
+//   - Qwen signal (any of):
+//       * top-level `type:'tool_result'`          (Qwen record kind)
+//       * top-level `subtype:'ui_telemetry'`      (Qwen system record)
+//       * `message.parts` (array) with a part that has `functionCall`
+//   - Claude signal:
+//       * `message.content` (array) with an item whose `type` is `'tool_use'`
+//         or `'text'`
+//
+// `gigacode` is indistinguishable from `qwen-code` by content (the parser is
+// shared), so a qwen-shaped file resolves to `'qwen-code'`. `--harness
+// gigacode` overrides the sniff to stamp `agent:'gigacode'`.
+//
+// Iterates up to MAX_SNIFF_LINES non-empty lines so a transcript whose first
+// record is plain user text (no discriminator on either side) still resolves
+// once an assistant tool call appears a few lines in. Bounded — never slurps
+// the whole file. Reads at most SNIFF_BYTE_CAP bytes from the start. Fail-open
+// throughout: file-missing, empty, all-malformed, or no-discriminator → null
+// (the caller falls back to 'claude-code' or whatever its precedence dictates).
+// Never throws.
+
+const MAX_SNIFF_LINES = 10;
+const SNIFF_BYTE_CAP = 256 * 1024; // 256 KB — ample for 10+ records.
+
+/**
+ * Read-only sniff of a transcript file's first parseable lines to identify
+ * the harness shape. Returns `'qwen-code'` for gemini/qwen-shaped records,
+ * `'claude-code'` for claude-shaped records, or `null` if no scanned line
+ * carries a discriminator (empty/unparseable/ambiguous file). Never throws.
+ */
+function sniffHarnessFromTranscript(filePath: string): 'qwen-code' | 'claude-code' | null {
+  let raw: string;
+  try {
+    const fd = openSync(filePath, 'r');
+    try {
+      const buf = Buffer.alloc(SNIFF_BYTE_CAP);
+      const bytes = readSync(fd, buf, 0, buf.length, 0);
+      raw = buf.subarray(0, bytes).toString('utf8');
+    } finally {
+      closeSync(fd);
+    }
+  } catch {
+    return null; // missing / unreadable → fail open
+  }
+
+  let scanned = 0;
+  for (const line of raw.split('\n')) {
+    if (scanned >= MAX_SNIFF_LINES) break;
+    const trimmed = line.trim();
+    if (trimmed === '') continue;
+    scanned++;
+    let rec: unknown;
+    try {
+      rec = JSON.parse(trimmed);
+    } catch {
+      continue; // malformed line → skip, keep scanning
+    }
+    const verdict = classifyRecordShape(rec);
+    if (verdict !== null) return verdict;
+  }
+  return null;
+}
+
+/**
+ * Pure shape classifier for one parsed JSONL record. Returns `'qwen-code'` if
+ * the record carries a Qwen-only discriminator, `'claude-code'` if it carries
+ * a Claude-only discriminator, or `null` if the record is ambiguous (e.g. a
+ * plain user-text record whose shape is shared across harnesses). Never
+ * throws — bad input is treated as ambiguous.
+ */
+function classifyRecordShape(rec: unknown): 'qwen-code' | 'claude-code' | null {
+  if (rec === null || typeof rec !== 'object' || Array.isArray(rec)) return null;
+  const r = rec as Record<string, unknown>;
+
+  // Top-level Qwen-only discriminators.
+  if (r['type'] === 'tool_result') return 'qwen-code';
+  if (r['subtype'] === 'ui_telemetry') return 'qwen-code';
+
+  const msg = r['message'];
+  if (msg !== null && typeof msg === 'object' && !Array.isArray(msg)) {
+    const m = msg as Record<string, unknown>;
+
+    // Qwen: message.parts with a functionCall part.
+    const parts = m['parts'];
+    if (Array.isArray(parts)) {
+      for (const p of parts) {
+        if (
+          p !== null &&
+          typeof p === 'object' &&
+          !Array.isArray(p) &&
+          'functionCall' in (p as Record<string, unknown>)
+        ) {
+          return 'qwen-code';
+        }
+      }
+    }
+
+    // Claude: message.content with a tool_use or {type:'text'} item.
+    const content = m['content'];
+    if (Array.isArray(content)) {
+      for (const item of content) {
+        if (item !== null && typeof item === 'object' && !Array.isArray(item)) {
+          const t = (item as Record<string, unknown>)['type'];
+          if (t === 'tool_use' || t === 'text') return 'claude-code';
+        }
+      }
+    }
+  }
+  return null;
 }
