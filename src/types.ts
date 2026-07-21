@@ -141,13 +141,23 @@ export interface InitResult {
  * is a function so the spec can defer filesystem/env reads until invoked
  * (no I/O at module load). Stream/install are stubs filled in by later
  * tasks — declared here so consumers can program against the seam today.
+ *
+ * `streamSession` is async because every real implementation reads a file
+ * (Claude's `src/adapter/stream.ts`, Qwen/GigaCode's `src/adapter/qwen/stream.ts`).
+ * The Task-1 contract wrote `: NormalizedEnvelope` (sync); Task 7 widens it to
+ * `Promise<NormalizedEnvelope>` so the existing async readers attach to the
+ * spec without a redundant sync wrapper. The return is the envelope alone —
+ * Claude's richer `{envelope, cwd, cwds, warnings}` shape is reduced to the
+ * envelope by the spec (the cwd/warnings path is still available via the
+ * underlying `streamSession` import for `src/pipeline.ts` until Task 10
+ * migrates it to program against the spec).
  */
 export interface HarnessSpec {
   id: HarnessId;
   displayName: string;
   defaultRootDir(): string;
   layout: TranscriptLayout;
-  streamSession(filePath: string): NormalizedEnvelope;
+  streamSession(filePath: string): Promise<NormalizedEnvelope>;
   installHook(opts: { cwd: string }): InitResult;
   capabilities: CapabilityMatrix;
 }
