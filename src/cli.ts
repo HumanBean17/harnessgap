@@ -8,19 +8,48 @@
 // ./pipeline.js, ./config.js, node:process, node:fs. The package.json version
 // is read at runtime via fs + URL (no JSON import attribute, no node:path
 // needed). No disk writes beyond what runScan performs (none).
+//
+// Qwen+GigaCode slice Task 9: the `scan`/`reflect` commands gain
+// `--harness <id>` (choices claude-code|qwen-code|gigacode) and
+// `--harness-dir <path>`. The legacy `--claude-dir <path>` is RETAINED as a
+// deprecated alias = `--harness claude-code --harness-dir <path>`; passing it
+// alongside `--harness qwen-code|gigacode` is a hard conflict (exit non-zero).
+// Harness resolution precedence for scan: --harness flag → config.harness →
+// 'claude-code'. The resolved `{ harness, harnessDir }` is threaded into
+// runScan/runReflect as new optional fields; Task 10 wires the actual spec
+// dispatch (chats/ discovery + qwen streamSession).
+//
+// `init <agent>` is widened from claude-only to claude | qwen | gigacode and
+// now routes through `resolveHarness(id).installHook({cwd})` so the install
+// lands under .claude/ / .qwen/ / .gigacode/ respectively. `init claude`
+// remains behaviorally identical (artifacts + paths unchanged).
 
 import { Command } from 'commander';
 import { readFileSync } from 'node:fs';
 import process from 'node:process';
 import { runScan, type ScanOptions, runReflect, type ReflectOptions } from './pipeline.js';
-import { initClaude } from './init/claude.js';
-import { ConfigError } from './config.js';
+import { ConfigError, loadConfig } from './config.js';
+import { resolveHarness } from './adapter/index.js';
+import type { HarnessId, InitResult } from './types.js';
 
 // Resolve package.json relative to this module so the version is correct
 // whether run from dist/cli.js or via the installed bin symlink. URL-based
 // path avoids importing node:path / node:url.
 const pkgUrl = new URL('../package.json', import.meta.url);
 const pkg = JSON.parse(readFileSync(pkgUrl, 'utf8')) as { version: string };
+
+/** The closed set of harness backends the CLI accepts on `--harness`. */
+const HARNESS_CHOICES: readonly HarnessId[] = ['claude-code', 'qwen-code', 'gigacode'];
+
+/**
+ * `init <agent>` arg → HarnessId. Each agent name maps to exactly one harness
+ * backend; an unknown arg is rejected by the action with a clear error.
+ */
+const AGENT_TO_HARNESS: Readonly<Record<string, HarnessId>> = {
+  claude: 'claude-code',
+  qwen: 'qwen-code',
+  gigacode: 'gigacode',
+};
 
 /** The parsed option shape commander hands to the scan action. */
 interface ScanOpts {
@@ -33,6 +62,8 @@ interface ScanOpts {
   diagnose?: boolean;
   config?: string;
   claudeDir?: string;
+  harness?: string;
+  harnessDir?: string;
 }
 
 /** The parsed option shape commander hands to the reflect action. */
@@ -45,6 +76,85 @@ interface ReflectOpts {
   format?: 'json' | 'hook-stop';
   config?: string;
   claudeDir?: string;
+  harness?: string;
+  harnessDir?: string;
+}
+
+/**
+ * Validate `--harness` against the closed HarnessId set and enforce the
+ * `--claude-dir` conflict rule (the alias implies claude-code, so combining
+ * it with a non-claude `--harness` is a hard error). Returns the validated
+ * flag value (or `undefined` when no flag was passed). Shared by scan + reflect.
+ *
+ * Dir resolution: `--harness-dir` wins, else `--claude-dir` (the alias).
+ *
+ * Throws ConfigError on conflict or unknown harness id — the caller surfaces
+ * it via the standard stderr+exit-1 path.
+ */
+function validateHarnessFlags(
+  harnessFlag: string | undefined,
+  harnessDir: string | undefined,
+  claudeDir: string | undefined,
+): { harness: HarnessId | undefined; harnessDir: string | undefined } {
+  // Conflict: --claude-dir is an alias for --harness claude-code --harness-dir;
+  // combining it with a non-claude --harness asks for two different harnesses.
+  if (
+    claudeDir !== undefined &&
+    harnessFlag !== undefined &&
+    harnessFlag !== 'claude-code'
+  ) {
+    throw new ConfigError(
+      `conflict: --claude-dir cannot be combined with --harness ${harnessFlag} (use --harness ${harnessFlag} --harness-dir <path>)`,
+    );
+  }
+
+  // Defensive: validate the flag value against the closed HarnessId set. The
+  // help text lists the choices, but commander does not enforce them at parse
+  // time, so a bad value reaches the action; turn it into a clear error here
+  // rather than a silent fall-through or a downstream resolveHarness throw.
+  if (
+    harnessFlag !== undefined &&
+    !HARNESS_CHOICES.includes(harnessFlag as HarnessId)
+  ) {
+    throw new ConfigError(
+      `Unknown harness id: ${harnessFlag}. Supported: ${HARNESS_CHOICES.join(', ')}.`,
+    );
+  }
+
+  return {
+    harness: harnessFlag as HarnessId | undefined,
+    harnessDir: harnessDir ?? claudeDir,
+  };
+}
+
+/**
+ * Qwen+GigaCode slice Task 9: resolve the harness id + dir per the documented
+ * precedence for `scan`. Precedence for the harness id: `--harness` flag →
+ * (implicit claude-code when `--claude-dir` is passed without a flag) →
+ * `config.harness` → `'claude-code'` (the last is belt-and-suspenders;
+ * `cfg.harness` is always populated by `loadConfig` via `DEFAULT_CONFIG`).
+ * `--claude-dir` does NOT count as a harness flag for the conflict rule
+ * (validateHarnessFlags enforces that), but it DOES imply claude-code for
+ * resolution: a user running `scan --claude-dir /path` while their config
+ * says `harness: qwen-code` almost certainly wants the Claude layout at that
+ * dir, not a Qwen dispatch that finds 0 `chats/` sessions and exits 0 with
+ * an empty leaderboard (silent failure). An explicit `--harness` always wins.
+ */
+function resolveHarnessForCommand(
+  harnessFlag: string | undefined,
+  harnessDir: string | undefined,
+  claudeDir: string | undefined,
+  cfgHarness: HarnessId,
+): { harness: HarnessId; harnessDir: string | undefined } {
+  const { harness, harnessDir: resolvedDir } = validateHarnessFlags(
+    harnessFlag,
+    harnessDir,
+    claudeDir,
+  );
+  return {
+    harness: harness ?? (claudeDir !== undefined ? 'claude-code' : cfgHarness),
+    harnessDir: resolvedDir,
+  };
 }
 
 const program = new Command();
@@ -56,7 +166,7 @@ program
 
 program
   .command('scan', { isDefault: true })
-  .description('Scan Claude Code transcripts for harness gaps')
+  .description('Scan agent transcripts (Claude Code / Qwen Code / GigaCode) for harness gaps')
   .option('--repo <path>', 'filter to a specific repo toplevel')
   .option('--since <dur>', 'only sessions within this lookback (e.g. 30d, 12h)')
   .option(
@@ -72,20 +182,46 @@ program
     'Classify each flagged area into a typed cause (doc/config-doc/test-gap/refactor-flag/inherent-complexity). Reads docs/ for grounding.',
   )
   .option('--config <path>', 'path to a .harnessgap.yml config file')
-  .option('--claude-dir <path>', 'Claude Code config directory (contains projects/)')
+  .option(
+    '--harness <id>',
+    'harness backend to scan (claude-code | qwen-code | gigacode)',
+    undefined,
+  )
+  .option('--harness-dir <path>', 'harness config directory (contains projects/)')
+  .option(
+    '--claude-dir <path>',
+    '[deprecated alias for --harness claude-code --harness-dir <path>] Claude Code config directory',
+  )
   .action(async (opts: ScanOpts) => {
-    const scanOpts: ScanOptions = {
-      repo: opts.repo,
-      since: opts.since,
-      limit: opts.limit,
-      json: opts.json,
-      calibrate: opts.calibrate,
-      bootstrap: opts.bootstrap,
-      diagnose: opts.diagnose,
-      configPath: opts.config,
-      claudeDir: opts.claudeDir,
-    };
     try {
+      // Load config early to resolve harness precedence (flag → config → default).
+      // runScan re-loads the same config (same path); the duplicate read is
+      // bounded and keeps the pipeline's loadConfig contract unchanged.
+      const cfg = loadConfig(opts.config);
+      const { harness, harnessDir } = resolveHarnessForCommand(
+        opts.harness,
+        opts.harnessDir,
+        opts.claudeDir,
+        cfg.harness,
+      );
+
+      // Thread the resolved harness through to runScan. claudeDir is also set
+      // (from whichever dir flag was used) so the legacy discovery path uses
+      // the right root regardless of which flag the user passed. Task 10
+      // consumes `harness` + `harnessDir` to dispatch through the spec.
+      const scanOpts: ScanOptions = {
+        repo: opts.repo,
+        since: opts.since,
+        limit: opts.limit,
+        json: opts.json,
+        calibrate: opts.calibrate,
+        bootstrap: opts.bootstrap,
+        diagnose: opts.diagnose,
+        configPath: opts.config,
+        claudeDir: opts.claudeDir ?? opts.harnessDir,
+        harness,
+        harnessDir,
+      };
       const result = await runScan(scanOpts);
       // Write then exit in the flush callback so piped stdout is never
       // truncated by process.exit.
@@ -114,19 +250,46 @@ program
     'json',
   )
   .option('--config <path>', 'path to a .harnessgap.yml config file')
-  .option('--claude-dir <path>', 'Claude Code config directory (contains projects/)')
+  .option(
+    '--harness <id>',
+    'harness backend to reflect (claude-code | qwen-code | gigacode)',
+    undefined,
+  )
+  .option('--harness-dir <path>', 'harness config directory (contains projects/)')
+  .option(
+    '--claude-dir <path>',
+    '[deprecated alias for --harness claude-code --harness-dir <path>] Claude Code config directory',
+  )
   .action(async (opts: ReflectOpts) => {
-    const reflectOpts: ReflectOptions = {
-      transcript: opts.transcript,
-      latest: opts.latest,
-      repo: opts.repo,
-      excludeSession: opts.excludeSession,
-      stopHookActive: opts.stopHookActive,
-      format: opts.format,
-      configPath: opts.config,
-      claudeDir: opts.claudeDir,
-    };
     try {
+      // Task 11: --harness flag wins; otherwise the pipeline sniffs the
+      // transcript file's shape (qwen gemini parts/functionCall vs claude
+      // content/tool_use) and auto-detects. Config `harness:` is NOT applied
+      // here for reflect — for --transcript the file is authoritative (the
+      // sniff runs inside runReflect); for --latest the pipeline falls back
+      // to cfg.harness itself (no single file to sniff). validateHarnessFlags
+      // still enforces the choice + the --claude-dir conflict before we
+      // dispatch, so user errors surface here with the same stderr+exit-1
+      // path as scan.
+      loadConfig(opts.config);
+      const { harness, harnessDir } = validateHarnessFlags(
+        opts.harness,
+        opts.harnessDir,
+        opts.claudeDir,
+      );
+
+      const reflectOpts: ReflectOptions = {
+        transcript: opts.transcript,
+        latest: opts.latest,
+        repo: opts.repo,
+        excludeSession: opts.excludeSession,
+        stopHookActive: opts.stopHookActive,
+        format: opts.format,
+        configPath: opts.config,
+        claudeDir: opts.claudeDir ?? opts.harnessDir,
+        harness,
+        harnessDir,
+      };
       const result = await runReflect(reflectOpts);
       // Write then exit in the flush callback so piped stdout is never
       // truncated by process.exit.
@@ -145,27 +308,30 @@ program
   .command('init <agent>')
   .description('Install the harnessgap Stop hook + /reflect command for an agent')
   .action((agent: string) => {
-    // Only `claude` is supported this slice.
-    if (agent !== 'claude') {
+    // Qwen+GigaCode slice Task 9: widen from claude-only to claude | qwen |
+    // gigacode. Each agent maps to a HarnessId, resolves the spec, and calls
+    // spec.installHook({cwd}) — the spec's installHook handles the per-harness
+    // artifact layout (.claude/ vs .qwen/ vs .gigacode/) and returns the
+    // harness-agnostic InitResult contract.
+    const harnessId = AGENT_TO_HARNESS[agent];
+    if (harnessId === undefined) {
       process.stderr.write(
-        `error: unsupported agent '${agent}'. Only 'claude' is supported.\n`,
+        `error: unsupported agent '${agent}'. Supported: claude, qwen, gigacode.\n`,
         () => process.exit(1),
       );
       return;
     }
     try {
-      const { wrapperPath, settingsPath, commandPath, settingsBackupPath } =
-        initClaude({ cwd: process.cwd() });
-      // One-line summary of the paths written (wrapper path signals success).
-      const summary = `installed harnessgap for claude: ${wrapperPath} | ${settingsPath} | ${commandPath}\n`;
+      const spec = resolveHarness(harnessId);
+      const result: InitResult = spec.installHook({ cwd: process.cwd() });
       const writeSuccess = () =>
-        process.stdout.write(summary, () => process.exit(0));
-      if (settingsBackupPath) {
+        process.stdout.write(result.message + '\n', () => process.exit(0));
+      if (result.settingsBackupPath) {
         // An existing settings.json was unparseable and got backed up before the
         // fresh Stop entry was written — surface it so the user can recover.
         // Written in a flush callback so the warning is never lost to exit.
         process.stderr.write(
-          `warning: settings.json was invalid JSON — backed up to ${settingsBackupPath} before installing the hook\n`,
+          `warning: settings.json was invalid JSON — backed up to ${result.settingsBackupPath} before installing the hook\n`,
           () => writeSuccess(),
         );
       } else {

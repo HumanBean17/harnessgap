@@ -84,10 +84,123 @@ export interface NormalizedEvent {
   correction: Correction | null;
 }
 
+// Multi-harness dispatch seam (Qwen Code + GigaCode slice, Task 1). The
+// contracts below are pinned verbatim against the slice spec; later tasks
+// consume them via the HarnessSpec registry and adapter selectors. Field
+// names are contracts — do not rename.
+
+/** The closed set of harness backends harnessgap can read transcripts from. */
+export type HarnessId = 'claude-code' | 'qwen-code' | 'gigacode';
+
+/**
+ * On-disk transcript layout for a harness. `projectsSegment` is the literal
+ * directory name; `sessionSubdir` is optional (ABSENT for Claude Code's flat
+ * `projects/<proj>/*.jsonl` layout, PRESENT for the Qwen/GigaCode
+ * `projects/<proj>/chats/*.jsonl` layout); `extension` is pinned to `.jsonl`
+ * for v1. See `src/adapter/index.ts` CLAUDE_LAYOUT vs CHATS_LAYOUT.
+ */
+export interface TranscriptLayout {
+  projectsSegment: 'projects';
+  sessionSubdir?: 'chats';
+  extension: '.jsonl';
+}
+
+/**
+ * Closed enumeration of the seven behavioral axes a harness may or may not
+ * support. Keys are contracts — later tasks index `CapabilityMatrix` by them.
+ */
+export type CapabilityKey =
+  | 'sessionDiscovery'
+  | 'streamFormat'
+  | 'finalizationSignal'
+  | 'interruption'
+  | 'fileChangeEvidence'
+  | 'resume'
+  | 'perPromptContextInjection';
+
+/** Per-harness capability state; every `CapabilityKey` must be present. */
+export type CapabilityMatrix = Record<CapabilityKey, 'supported' | 'pending'>;
+
+/**
+ * Return value of `HarnessSpec.installHook`. `artifacts` are the repo-relative
+ * (or absolute) paths of files written during install; `settingsBackupPath`
+ * is present only when an existing settings file was backed up; `degraded`
+ * flags environments where the hook cannot be installed (e.g. unsupported
+ * harness); `message` is a single-line human-readable status.
+ */
+export interface InitResult {
+  harness: HarnessId;
+  artifacts: string[];
+  settingsBackupPath?: string;
+  degraded: boolean;
+  message: string;
+}
+
+/**
+ * The dispatch seam: each harness backend implements this interface. The
+ * registry (added in a later task) selects a spec by `id`. `defaultRootDir`
+ * is a function so the spec can defer filesystem/env reads until invoked
+ * (no I/O at module load). Stream/install are stubs filled in by later
+ * tasks — declared here so consumers can program against the seam today.
+ *
+ * `streamSession` is async because every real implementation reads a file
+ * (Claude's `src/adapter/stream.ts`, Qwen/GigaCode's `src/adapter/qwen/stream.ts`).
+ * The Task-1 contract wrote `: NormalizedEnvelope` (sync); the original
+ * Task-7 widening reduced it to `Promise<NormalizedEnvelope>`. The current
+ * shape is `Promise<StreamResult>` — the full `{envelope, cwd, cwds, warnings}`
+ * value the streaming readers already produce — so the pipeline can program
+ * against `spec.streamSession` (Task 10) without a shape reduction and the
+ * cwd/cwds/warnings paths stay available through the spec (not only via the
+ * direct `streamSession` import).
+ */
+export interface HarnessSpec {
+  id: HarnessId;
+  displayName: string;
+  defaultRootDir(): string;
+  layout: TranscriptLayout;
+  streamSession(filePath: string): Promise<StreamResult>;
+  installHook(opts: { cwd: string }): InitResult;
+  capabilities: CapabilityMatrix;
+}
+
+/**
+ * Per-session streaming warnings — the subset of {@link Warnings} a single
+ * `streamSession` call can compute. The remaining `Warnings` fields
+ * (`skipped_sessions`, `symlinks_rejected`, `unresolvable_cwd`) are
+ * pipeline-level aggregates computed by the caller across the whole scan,
+ * not by any one stream. Field names/types are pinned verbatim to what
+ * Claude's `src/adapter/stream.ts` emits.
+ */
+export type StreamWarnings = Pick<
+  Warnings,
+  'malformed_lines' | 'oversized_lines' | 'truncated_sessions'
+>;
+
+/**
+ * Return value of `HarnessSpec.streamSession`. Mirrors Claude's
+ * `src/adapter/stream.ts` streamSession shape verbatim — same field names and
+ * types — so the Claude implementation conforms by construction and Task 10
+ * can migrate the pipeline to `spec.streamSession` mechanically.
+ *
+ *  - `envelope`: the normalized session envelope (events, span, agent stamp).
+ *  - `cwd`: representative cwd = first distinct cwd seen (empty when none).
+ *  - `cwds`: all distinct cwds seen across records, in first-seen order. The
+ *    pipeline tries each for repo/worktree resolution so a session that
+ *    started in a live dir and later moved into a since-deleted worktree
+ *    still resolves.
+ *  - `warnings`: per-session counters (malformed/oversized lines, truncated).
+ */
+export interface StreamResult {
+  envelope: NormalizedEnvelope;
+  cwd: string;
+  cwds: string[];
+  warnings: StreamWarnings;
+}
+
 export interface NormalizedEnvelope {
   schema_version: 1;
   session_id: string;
-  agent: 'claude-code';
+  agent: HarnessId;
   repo: string;
   started_at: string;
   duration_ms: number;
@@ -156,6 +269,12 @@ export interface JsonOutput {
 }
 
 export interface Config {
+  // Multi-harness dispatch selector (Qwen+GigaCode slice Task 8). Selects
+  // which HarnessSpec the pipeline resolves when streaming transcripts. The
+  // default `'claude-code'` preserves pre-slice behavior; `'qwen-code'` and
+  // `'gigacode'` opt into the new adapters. validated against the
+  // {@link HarnessId} union in `validateConfig`.
+  harness: HarnessId;
   detector: {
     thresholds_as: 'percentile' | 'absolute';
     flag_pct: number;
@@ -269,12 +388,20 @@ export interface Diagnosis {
  * Session-end reflect finding: the pure decision artifact built from one
  * `StruggleRecord`. `trip` is the derived block decision; the record reference
  * is carried through unchanged. schema_version is pinned to 1.
+ *
+ * `agent` (Qwen+GigaCode slice Task 11): the harness id that produced this
+ * finding — either the `--harness` flag value or the auto-detected id (from
+ * sniffing the transcript's shape when `reflect --transcript <path>` is called
+ * without `--harness`). Mirrors `NormalizedEnvelope.agent` so reflect callers
+ * can identify the detected harness from the finding alone (the underlying
+ * `StruggleRecord` is harness-agnostic and does not surface it).
  */
 export interface ReflectFinding {
   schema_version: 1;
   session_id: string;
   repo: string;
   mode: ScoringMode;
+  agent: HarnessId;
   record: StruggleRecord;
   trip: boolean;
   zero_edit: boolean;

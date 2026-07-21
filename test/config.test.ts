@@ -286,3 +286,45 @@ describe('docs_dirs and diagnose config (Slice 4 Task 1)', () => {
     expect(cfg.docs_dirs).toEqual(['docs', 'wiki']);
   });
 });
+
+describe('harness config key (Qwen+GigaCode slice Task 8)', () => {
+  it('DEFAULT_CONFIG.harness === "claude-code"', () => {
+    expect(DEFAULT_CONFIG.harness).toBe('claude-code');
+  });
+
+  it('loadConfig(path) with harness: qwen-code yields cfg.harness === "qwen-code"', () => {
+    const path = writeTmpConfig('harness: qwen-code\n');
+    const cfg = loadConfig(path);
+    expect(cfg.harness).toBe('qwen-code');
+  });
+
+  it('loadConfig() with no file defaults to harness === "claude-code" (via deep-merge over DEFAULT_CONFIG)', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'harnessgap-harness-default-'));
+    const originalCwd = process.cwd();
+    try {
+      process.chdir(dir);
+      const cfg = loadConfig();
+      expect(cfg.harness).toBe('claude-code');
+    } finally {
+      process.chdir(originalCwd);
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('loadConfig(path) with harness: wat throws ConfigError naming the invalid value', () => {
+    const path = writeTmpConfig('harness: wat\n');
+    try {
+      loadConfig(path);
+      throw new Error('expected loadConfig to throw');
+    } catch (e) {
+      expect(e).toBeInstanceOf(ConfigError);
+      expect((e as Error).message).toContain('harness');
+      expect((e as Error).message).toContain('wat');
+    }
+  });
+
+  it('loadConfig(path) with an unknown top-level key still throws ConfigError (allowlist behavior unchanged)', () => {
+    const path = writeTmpConfig('totally-bogus: 1\n');
+    expect(() => loadConfig(path)).toThrow(ConfigError);
+  });
+});

@@ -6,6 +6,7 @@
 // ever appears in the output.
 
 import type {
+  HarnessId,
   ReflectFinding,
   SignalValues,
   StopHookOutput,
@@ -18,6 +19,14 @@ import { SIGNAL_FIELDS, SIGNAL_ORDER } from './calibrate.js';
 interface ReflectFindingInput {
   record: StruggleRecord;
   zero_edit: boolean;
+  /**
+   * Qwen+GigaCode slice Task 11: the harness id that produced this finding —
+   * either the `--harness` flag value or the auto-detected id (from sniffing
+   * the transcript). Optional with a `'claude-code'` default so existing unit
+   * callers (test/hook.test.ts) keep working unchanged; `runReflect` always
+   * threads the resolved id through.
+   */
+  agent?: HarnessId;
 }
 
 // Fixed leading sentence instructing reflection. Ends without a period so the
@@ -28,16 +37,18 @@ const REFLECT_PROMPT =
 /**
  * Build the `ReflectFinding` from a record. Pure: derives `trip` as
  * `record.flagged && !zero_edit`, copies `session_id`/`repo`/`mode` from the
- * record, pins `schema_version: 1`, and carries the record reference through
- * as-is (not a clone).
+ * record, pins `schema_version: 1`, stamps `agent` (Task 11: the resolved
+ * harness id, defaulting to 'claude-code' when unspecified), and carries the
+ * record reference through as-is (not a clone).
  */
 export function buildReflectFinding(input: ReflectFindingInput): ReflectFinding {
-  const { record, zero_edit } = input;
+  const { record, zero_edit, agent = 'claude-code' } = input;
   return {
     schema_version: 1,
     session_id: record.session_id,
     repo: record.repo,
     mode: record.mode,
+    agent,
     record,
     trip: record.flagged && !zero_edit,
     zero_edit,

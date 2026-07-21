@@ -13,7 +13,7 @@
 import { createReadStream } from 'node:fs';
 import * as readline from 'node:readline';
 import * as path from 'node:path';
-import type { NormalizedEnvelope, NormalizedEvent, ToolKind, Warnings } from '../types.js';
+import type { NormalizedEnvelope, NormalizedEvent, StreamResult, StreamWarnings, ToolKind } from '../types.js';
 import { normalizeRecord } from './parse.js';
 
 // --- Caps (verbatim from the task brief) ---
@@ -21,26 +21,20 @@ const LINE_CAP = 1_048_576; // 1 MB: lines over this are skipped (oversized_line
 const EVENT_CAP = 5000; // once 5000 events collected, drop the rest (truncated)
 const BYTE_CAP = 52_428_800; // 50 MB: stop reading once cumulative bytes ≥ this (truncated)
 
-type StreamWarnings = Pick<Warnings, 'malformed_lines' | 'oversized_lines' | 'truncated_sessions'>;
-
 /**
  * Stream one .jsonl transcript → { envelope, cwd, warnings }. Reads line-by-line
  * via node:readline (never slurps). Enforces 1 MB line / 5000 event / 50 MB byte
  * caps. Fail-open: malformed JSON and oversized lines are skipped + counted,
  * never thrown. Deterministic given the file.
+ *
+ * Return shape is the named {@link StreamResult} type declared in `src/types.ts`
+ * (the dispatch seam's contract) — Claude's implementation conforms by
+ * construction. The per-session `warnings` object uses {@link StreamWarnings},
+ * the subset of pipeline-level `Warnings` a single streaming call can compute.
  */
 export async function streamSession(
   filePath: string,
-): Promise<{
-  envelope: NormalizedEnvelope;
-  /** Representative cwd = first distinct cwd seen (empty when none). */
-  cwd: string;
-  /** All distinct cwds seen across records, in first-seen order. The pipeline
-   *  tries each for repo resolution so a session that started in a live dir and
-   *  later moved into a since-deleted worktree still resolves. */
-  cwds: string[];
-  warnings: StreamWarnings;
-}> {
+): Promise<StreamResult> {
   const events: NormalizedEvent[] = [];
   let malformed_lines = 0;
   let oversized_lines = 0;

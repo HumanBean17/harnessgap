@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { parse } from 'yaml';
-import type { Config } from './types.js';
+import type { Config, HarnessId } from './types.js';
 
 /**
  * Typed error for config problems. Carries a clean human-readable message only;
@@ -18,6 +18,10 @@ export class ConfigError extends Error {
  * The exact §7 defaults. Later tasks depend on these values verbatim.
  */
 export const DEFAULT_CONFIG: Config = {
+  // Qwen+GigaCode slice Task 8: default to the Claude Code adapter so
+  // pre-slice behavior is preserved bit-for-bit. `'qwen-code'` / `'gigacode'`
+  // opt into the new adapters once their HarnessSpec is registered.
+  harness: 'claude-code',
   detector: {
     thresholds_as: 'percentile',
     flag_pct: 90,
@@ -109,7 +113,21 @@ export function parseDuration(s: string | undefined): number {
   }
 }
 
-const KNOWN_TOP_KEYS = new Set(['detector', 'areas', 'docs_dirs', 'diagnose']);
+// Qwen+GigaCode slice Task 8: `'harness'` joins the strict allowlist. Unknown
+// top-level keys are STILL rejected — this is an enumeration, not a wildcard.
+const KNOWN_TOP_KEYS = new Set([
+  'harness',
+  'detector',
+  'areas',
+  'docs_dirs',
+  'diagnose',
+]);
+
+const HARNESS_IDS: readonly HarnessId[] = [
+  'claude-code',
+  'qwen-code',
+  'gigacode',
+];
 
 function isPlainObject(v: unknown): v is Record<string, unknown> {
   return typeof v === 'object' && v !== null && !Array.isArray(v);
@@ -147,6 +165,15 @@ function deepMerge<T>(base: T, override: unknown): T {
 }
 
 function validateConfig(cfg: Config): void {
+  // Qwen+GigaCode slice Task 8: `harness` must be one of the closed
+  // {@link HarnessId} union. The allowlist + deep-merge already guarantees the
+  // key is present (DEFAULT_CONFIG.harness), but a user-supplied scalar like
+  // `wat` would otherwise slip through as a string and break dispatch later.
+  if (!HARNESS_IDS.includes(cfg.harness)) {
+    throw new ConfigError(
+      `harness must be one of ${HARNESS_IDS.join(', ')}, got ${JSON.stringify(cfg.harness)}`,
+    );
+  }
   const d = cfg.detector;
   if (d.flag_pct < 0 || d.flag_pct > 100) {
     throw new ConfigError(

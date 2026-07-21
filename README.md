@@ -1,9 +1,10 @@
 # harnessgap
 
-A **stateless, detection-only** CLI that reads Claude Code transcript logs and
-produces a *struggle leaderboard* — the areas of a repo where Claude Code
-sessions show the deterministic signals of friction (rereads, failure streaks,
-oscillating edits, abandonment, etc.).
+A **stateless, detection-only** CLI that reads agent transcript logs —
+**Claude Code**, **Qwen Code**, and **GigaCode** — and produces a
+*struggle leaderboard* — the areas of a repo where sessions show the
+deterministic signals of friction (rereads, failure streaks, oscillating edits,
+abandonment, etc.).
 
 The **default `scan` path is detection-only**: it writes nothing, installs
 nothing, persists nothing — it only prints a leaderboard to stdout. Cause
@@ -34,9 +35,11 @@ Requires Node >= 22.12.
 harnessgap scan [options]
 ```
 
-`scan` is the default command. It walks Claude Code transcripts under
-`~/.claude/projects/`, filters to a repo, runs the detector, and prints a
-leaderboard of struggle areas.
+`scan` is the default command. By default it walks Claude Code transcripts under
+`~/.claude/projects/`; `--harness <id>` selects Qwen Code or GigaCode (see
+[Supported harnesses](#supported-harnesses) below). It filters to a repo, runs
+the detector, and prints a leaderboard of struggle areas. A bare `scan` with no
+flags is unchanged from prior releases (Claude Code, `~/.claude`).
 
 ### Flags
 
@@ -50,9 +53,30 @@ leaderboard of struggle areas.
 | `--bootstrap` | Force bootstrap (absolute-threshold) scoring mode instead of percentile. |
 | `--diagnose` | Classify each flagged area into a typed cause (`doc` / `config-doc` / `test-gap` / `refactor-flag` / `inherent-complexity`) or `unclassified`, grounded by signal profile + doc-existence under `docs_dirs`. Opt-in; adds a `CAUSE` column to the table and a `diagnoses` field to `--json`. Default output is byte-identical to Slice 3 when off. Reads `docs/` (local fs, path-confined, no symlinks). |
 | `--config <path>` | Path to a `.harnessgap.yml` config file. Default: looks for `.harnessgap.yml` in the cwd. |
-| `--claude-dir <path>` | Claude Code config directory (contains `projects/`). Default: `~/.claude`. |
+| `--harness <id>` | Harness backend to scan: `claude-code` (default) \| `qwen-code` \| `gigacode`. Selects the transcript layout + parser. |
+| `--harness-dir <path>` | Harness config directory (contains `projects/`). Default: `~/.claude` \| `~/.qwen` \| `~/.gigacode` per `--harness`. |
+| `--claude-dir <path>` | **Deprecated alias** for `--harness claude-code --harness-dir <path>`. Conflicts with `--harness qwen-code\|gigacode`. Retained for backward compatibility. |
 | `--version` | Print the harnessgap version and exit. |
 | `--help` | Print help and exit. |
+
+## Supported harnesses
+
+Three harness backends ship, all at full scan + init + reflect parity:
+
+| Harness | `--harness` id | Transcript path | Default root |
+| --- | --- | --- | --- |
+| Claude Code | `claude-code` (default) | `~/.claude/projects/<slug>/*.jsonl` | `~/.claude` |
+| Qwen Code | `qwen-code` | `~/.qwen/projects/<slug>/chats/*.jsonl` | `~/.qwen` |
+| GigaCode | `gigacode` | `~/.gigacode/projects/<slug>/chats/*.jsonl` | `~/.gigacode` |
+
+Qwen Code and GigaCode transcripts use a Gemini-style `message.parts[]` record
+shape and live under a `chats/` subdir; GigaCode is a Qwen clone (same parser,
+different `agent` stamp). `scan`/`reflect` honor `--harness` + `--harness-dir`
+or the `harness:` config key; `reflect` also auto-detects the harness from the
+transcript shape when `--harness` is omitted. `init qwen` and `init gigacode`
+install the same fail-open Stop hook + `/reflect` command as `init claude`,
+under `.qwen/` or `.gigacode/` (Qwen Code's Stop registration shape and payload
+are byte-identical to Claude's).
 
 ## Session-end reflect (Slice 3)
 
@@ -63,13 +87,15 @@ trip-gated Claude Code `Stop` hook so reflection happens automatically at sessio
 end. The detection core is unchanged from Slice 1/2 — `reflect` reuses the same
 detector + bootstrap mode.
 
-### `init claude`
+### `init claude` / `init qwen` / `init gigacode`
 
 ```
-harnessgap init claude
+harnessgap init claude    # default; installs under <cwd>/.claude/
+harnessgap init qwen      # installs under <cwd>/.qwen/
+harnessgap init gigacode  # installs under <cwd>/.gigacode/
 ```
 
-Installs three artifacts under `<cwd>/.claude/` (idempotent — re-run to refresh):
+Installs three artifacts under the chosen harness dir (idempotent — re-run to refresh):
 
 - a **fail-open Stop-hook wrapper** — on every stop it runs
   `harnessgap reflect --transcript <just-finished> --format hook-stop`; any fault
@@ -97,7 +123,9 @@ auto-written to the repo**.
 | `--stop-hook-active` | Mark the Claude Code Stop hook as already active (short-circuit to allow). |
 | `--format <json\|hook-stop>` | Output form: the json `ReflectFinding` (default) or the `Stop` hook payload. |
 | `--config <path>` | Path to a `.harnessgap.yml` config file. |
-| `--claude-dir <path>` | Claude Code config directory (contains `projects/`). Default: `~/.claude`. |
+| `--harness <id>` | Harness backend: `claude-code` (default) \| `qwen-code` \| `gigacode`. When omitted, `reflect` auto-detects from the transcript shape. |
+| `--harness-dir <path>` | Harness config directory (contains `projects/`). Default per `--harness`. |
+| `--claude-dir <path>` | **Deprecated alias** for `--harness claude-code --harness-dir <path>`. |
 
 ### Calibration notes (dogfood, not promises)
 
@@ -157,11 +185,12 @@ for the pipeline seam + fail-open + privacy contract.
 ## Configuration (`.harnessgap.yml`)
 
 Optional. `scan` runs with built-in defaults if no file is present. The file is
-a YAML object with four top-level keys — `detector`, `areas`, `docs_dirs`, and
-`diagnose`. Anything else is rejected. Deep-merged over the defaults (arrays
-replace, they do not concatenate).
+a YAML object with five top-level keys — `harness`, `detector`, `areas`,
+`docs_dirs`, and `diagnose`. Anything else is rejected. Deep-merged over the
+defaults (arrays replace, they do not concatenate).
 
 ```yaml
+harness: claude-code                 # claude-code (default) | qwen-code | gigacode; --harness flag overrides
 detector:
   thresholds_as: percentile        # percentile (default) | absolute
   flag_pct: 90                     # percentile mode: flag the top (100 - flag_pct)% of composites
