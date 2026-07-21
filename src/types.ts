@@ -268,6 +268,12 @@ export interface JsonOutput {
 }
 
 export interface Config {
+  // Multi-harness dispatch selector (Qwen+GigaCode slice Task 8). Selects
+  // which HarnessSpec the pipeline resolves when streaming transcripts. The
+  // default `'claude-code'` preserves pre-slice behavior; `'qwen-code'` and
+  // `'gigacode'` opt into the new adapters. validated against the
+  // {@link HarnessId} union in `validateConfig`.
+  harness: HarnessId;
   detector: {
     thresholds_as: 'percentile' | 'absolute';
     flag_pct: number;
