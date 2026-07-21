@@ -1,6 +1,6 @@
 {
   "name": "harnessgap",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "description": "Stateless detection-only CLI that finds harness gaps in Claude Code transcripts",
   "license": "MIT",
   "author": "Dmitry Teryaev",
