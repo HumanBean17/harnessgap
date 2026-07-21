@@ -168,8 +168,13 @@ function isStopEntry(v: unknown): v is StopEntry {
  * deduped by command string. Reads defensively (missing/invalid → \`{}\`), preserves
  * every other top-level key and every other Stop entry (including user hooks that
  * share an entry with the harnessgap command).
+ *
+ * Exported (not just module-private) so `src/init/qwen.ts` can reuse it: the
+ * Qwen Code Stop hook registration shape is byte-identical to Claude's
+ * ({matcher, hooks:[{type:'command', command}]}) — confirmed from
+ * QwenLM/qwen-code docs/source; see `src/init/qwen.ts` header.
  */
-function mergeStopHook(
+export function mergeStopHook(
   raw: Record<string, unknown>,
   wrapperPath: string,
 ): Record<string, unknown> {
