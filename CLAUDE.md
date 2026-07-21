@@ -1,6 +1,7 @@
 # harnessgap
 
-Stateless, detection-only CLI: reads Claude Code transcripts, emits a struggle
+Stateless, detection-only CLI: reads Claude Code, Qwen Code, and GigaCode
+transcripts (`--harness <id>` selects; default `claude-code`), emits a struggle
 leaderboard (repo areas with friction signals — rereads, failure streaks,
 oscillating edits, abandonment). Default path: no writes, no network; cause
 attribution is opt-in via `scan --diagnose` (Slice 4).

@@ -160,7 +160,7 @@ program
 
 program
   .command('scan', { isDefault: true })
-  .description('Scan Claude Code transcripts for harness gaps')
+  .description('Scan agent transcripts (Claude Code / Qwen Code / GigaCode) for harness gaps')
   .option('--repo <path>', 'filter to a specific repo toplevel')
   .option('--since <dur>', 'only sessions within this lookback (e.g. 30d, 12h)')
   .option(

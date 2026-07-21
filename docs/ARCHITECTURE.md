@@ -9,11 +9,13 @@ for the design contract see the
 
 The **default `scan` path is a stateless, detection-only pipeline** (Slice 1);
 the opt-in `scan --diagnose` flag (Slice 4) layers cause attribution on top.
-`harnessgap scan` reads Claude Code transcript logs from
-`~/.claude/projects/`, normalizes them into a versioned event schema, runs
-seven deterministic struggle signals, scores sessions as a percentile of
-composites (with an absolute-threshold bootstrap for thin history), localizes
-struggle to repo areas, and prints a leaderboard to stdout.
+`harnessgap scan` reads agent transcript logs — Claude Code (default, from
+`~/.claude/projects/`), Qwen Code, or GigaCode (selected via `--harness <id>`,
+see [§3 Multi-harness dispatch](#multi-harness-dispatch-qwen-code--gigacode)) —
+normalizes them into a versioned event schema, runs seven deterministic
+struggle signals, scores sessions as a percentile of composites (with an
+absolute-threshold bootstrap for thin history), localizes struggle to repo
+areas, and prints a leaderboard to stdout.
 
 The contract is **stateless + offline**:
 
@@ -25,26 +27,30 @@ The contract is **stateless + offline**:
   out of scope and common to any process that reads files.)
 
 All pipeline stages are pure functions of their inputs; the only I/O lives in
-`src/walk.ts`, `src/adapter/stream.ts`, `src/git.ts`, and `src/cli.ts`. The
-normalized-event schema is the deliberate seam: the next slice's ingest hook
-reuses the adapter and detector verbatim and only adds persistence.
+`src/walk.ts`, `src/adapter/stream.ts` + `src/adapter/qwen/stream.ts`,
+`src/git.ts`, and `src/cli.ts`. The normalized-event schema is the deliberate
+seam: the next slice's ingest hook reuses the adapter and detector verbatim and
+only adds persistence.
 
 ## 2. Module map
 
 | File | Responsibility | Key exports |
 | --- | --- | --- |
-| `src/types.ts` | Shared type catalog. Field names/shapes are contracts pinned to the spec. | `NormalizedEvent`, `NormalizedEnvelope`, `SignalValues`, `StruggleRecord`, `AreaRow`, `JsonOutput`, `Config`, `Warnings`, `SignalName`, `ScoringMode`, `Severity`, `BaselinePath`, `BaselineState`, `BaselineAssessment`, `RepoFinding`, `ToolKind`, `EventKind`, `ReflectFinding`, `StopHookOutput`, `ReflectFrame`, `Cause`, `SessionEvidence`, `EvidenceRef`, `Diagnosis`, `CmdClass`, `FileClass` |
-| `src/config.ts` | Load + validate `.harnessgap.yml`; deep-merge over defaults; parse `--since` durations. | `loadConfig`, `parseDuration`, `DEFAULT_CONFIG`, `ConfigError` |
+| `src/types.ts` | Shared type catalog. Field names/shapes are contracts pinned to the spec. | `NormalizedEvent`, `NormalizedEnvelope`, `SignalValues`, `StruggleRecord`, `AreaRow`, `JsonOutput`, `Config`, `Warnings`, `SignalName`, `ScoringMode`, `Severity`, `BaselinePath`, `BaselineState`, `BaselineAssessment`, `RepoFinding`, `ToolKind`, `EventKind`, `ReflectFinding`, `StopHookOutput`, `ReflectFrame`, `Cause`, `SessionEvidence`, `EvidenceRef`, `Diagnosis`, `CmdClass`, `FileClass`, `HarnessId`, `TranscriptLayout`, `CapabilityKey`, `CapabilityMatrix`, `HarnessSpec`, `InitResult`, `StreamResult`, `StreamWarnings` |
+| `src/config.ts` | Load + validate `.harnessgap.yml`; deep-merge over defaults; parse `--since` durations; validate the `harness:` key against the `HarnessId` union (default `claude-code`). | `loadConfig`, `parseDuration`, `DEFAULT_CONFIG`, `ConfigError` |
 | `src/git.ts` | Stat-based MAIN-repo resolver. Walks up from a cwd to the nearest directory `.git` (the main repo; worktrees only hold a `.git` file); also recovers SIBLING worktrees by scanning candidate siblings' `.git/worktrees/<name>/gitdir` registrations, returning the recovered checkout root alongside the repo. No git invocation, no shell. Memoized by cwd. | `resolveRepo`, `RepoResolution`, `resolveMainRepo`, `walkToRepo` |
-| `src/walk.ts` | Discover `.jsonl` transcripts under `<claudeDir>/projects/*/*.jsonl`. Rejects symlinks. | `discoverTranscripts`, `defaultClaudeDir` |
+| `src/walk.ts` | Discover `.jsonl` transcripts under a harness root. Takes a `TranscriptLayout` (`projectsSegment` + optional `sessionSubdir` + `extension`) so the same code handles Claude's flat `<root>/projects/<slug>/*.jsonl` and Qwen/GigaCode's `<root>/projects/<slug>/chats/*.jsonl`. Rejects symlinks. `defaultClaudeDir` is a deprecated alias for `defaultRootDir('claude-code')`. | `discoverTranscripts`, `defaultRootDir`, `defaultClaudeDir` |
 | `src/relativize.ts` | Pure file-path relativization: strip the repo-root prefix, then collapse worktree checkout prefixes — `.<hidden>/worktrees/<name>/` (Claude Code's `.claude/worktrees/…`) OR `.worktrees/<name>/` (a hidden checkout dir named `worktrees` itself) — so the same file across the main checkout and nested worktrees aggregates into one area; also strips a sibling-worktree checkout root (`worktreeCheckoutRoot`, passed by the resolver) so sibling-worktree files collapse onto the same repo-relative areas as the main checkout. | `relativizeFilePath`, `stripWorktreePrefix`, `relativizeEnvelopeFiles` |
 | `src/pipeline.ts` | Thin I/O shell: orchestrates walk → stream → resolve-main-repo → relativize → detect → aggregate → output. Also hosts `runReflect`, the n=1 session-end analog (see §10). | `runScan`, `ScanOptions`, `ScanResult`, `runReflect`, `ReflectOptions`, `ReflectResult` |
-| `src/cli.ts` | commander bin entry. Parses args, awaits `runScan`/`runReflect`/`initClaude`, writes stdout, exits. | `program` (`scan` default, `reflect`, `init` commands) |
+| `src/cli.ts` | commander bin entry. Parses args, awaits `runScan`/`runReflect`, routes `init <agent>` through `resolveHarness(id).installHook`. `scan`/`reflect` accept `--harness`/`--harness-dir` (with `--claude-dir` as a deprecated alias that conflicts with non-claude `--harness`). Writes stdout, exits. | `program` (`scan` default, `reflect`, `init` commands) |
 | `src/egress.ts` | §11 no-network guard: regexes for forbidden imports + `fetch()` calls. Single source of truth shared by the egress audit. | `FORBIDDEN_IMPORT`, `FORBIDDEN_FETCH_CALL`, `hasForbiddenImport`, `hasFetchCall`, `hasForbiddenEgress` |
 | `src/adapter/scrub.ts` | Pattern-catalog secret scrubber (7 rules). No entropy heuristic. | `scrubCmd`, `scrubQuery`, `scrubFiles` |
 | `src/adapter/taxonomy.ts` | Claude Code tool-name → `ToolKind` map. | `mapToolKind` |
 | `src/adapter/parse.ts` | Per-record normalizer: one parsed JSONL record → one `NormalizedEvent` (or null). Scrubbing + correction flag applied here. | `normalizeRecord` |
 | `src/adapter/stream.ts` | Claude Code streaming JSONL reader (adapter I/O). Size caps, `mergeToolCalls`, envelope assembly. | `streamSession` |
+| `src/adapter/index.ts` | Multi-harness dispatcher (Task 7 seam): the three `HarnessSpec`s (`CLAUDE_SPEC`, `QWEN_SPEC`, `GIGACODE_SPEC`), `resolveHarness(id)`, and `discoverForSpec(spec, rootOverride)`. Pure assembly — no detection logic, only two pieces of permitted mapping (GigaCode re-stamps Qwen's envelope `agent`; Claude's `installHook` maps `InitClaudeResult` → `InitResult`). | `CLAUDE_SPEC`, `QWEN_SPEC`, `GIGACODE_SPEC`, `resolveHarness`, `discoverForSpec` |
+| `src/adapter/qwen/taxonomy.ts` | Qwen Code tool-name → `ToolKind` map (sibling of the Claude taxonomy; `read_file`, `run_shell_command`, `grep_search`, …). | (qwen taxonomy map) |
+| `src/adapter/qwen/parse.ts` | Qwen Code on-disk record parser: Gemini-style `message.parts[]` (`text`/`functionCall`/`functionResponse`) + `system` subtypes → 0..N intermediate items. Reuses the shared `scrub.ts` catalog + size caps. | `parseQwenRecord`, `mapQwenToolKind` |
 | `src/adapter/qwen/stream.ts` | Qwen Code transcript stream + merge — mirrors the Claude adapter's size caps (1 MB line / 5000 events / 50 MB file) and envelope shape on Qwen's parallel-call record shape; pins `agent: 'qwen-code'`. Reuses sibling `src/adapter/qwen/parse.ts` + `taxonomy.ts` and the shared `correction.ts`. Wired into `runScan`/`runReflect` via `resolveHarness('qwen-code')` → `discoverForSpec` + `spec.streamSession` (Task 10 of the Qwen+GigaCode slice). | `mergeQwenItems`, `streamQwenSession` |
 | `src/adapter/correction.ts` | Content-based correction detector: classifies a user message as a course-correction over an additive per-language keyword catalog (EN+RU, Cyrillic-normalized). Emits `{matched, shape}` only — never raw text. | `detectCorrection` |
 | `src/detector/signals.ts` | Pure signal computation: 7 signals from a normalized event stream. | `computeSignals` |
@@ -64,7 +70,7 @@ reuses the adapter and detector verbatim and only adds persistence.
 | `src/output/json.ts` | Pure `JsonOutput` envelope assembler for `--json`. | `buildJsonEnvelope` |
 | `src/output/human.ts` | Pure human-readable leaderboard formatter (the default table). | `formatHuman` |
 | `src/output/calibrate.ts` | Pure calibrate builders: per-signal min/p50/p90/max + active threshold, for `--calibrate`. | `buildCalibrateObject`, `formatCalibrateTable` |
-| `src/output/hook.ts` | Pure session-end reflect builders: a `StruggleRecord` → `ReflectFinding` decision + the Claude Code `Stop` hook payload. No I/O, no node builtins; the only Claude-Code-specific code in the tree. | `buildReflectFinding`, `formatStopHookOutput` |
+| `src/output/hook.ts` | Pure session-end reflect builders: a `StruggleRecord` → `ReflectFinding` decision + the Claude Code `Stop` hook payload. No I/O, no node builtins. Originally Claude-Code-specific; Qwen Code's Stop hook is a byte-identical Claude fork, so the same payload shape serves all three harnesses via `src/init/qwen.ts`. | `buildReflectFinding`, `formatStopHookOutput` |
 | `src/init/claude.ts` | `harnessgap init claude` installer: writes the fail-open Stop-hook wrapper, idempotently merges `hooks.Stop` in `.claude/settings.json`, writes the `/reflect` command. Only `node:fs` + `node:path` (the wrapper's `child_process` lives in the emitted runtime artifact under `.claude/`, not in `src/`). `mergeStopHook` is exported so `src/init/qwen.ts` can reuse the dedup-by-command merge. | `initClaude`, `mergeStopHook` |
 | `src/init/qwen.ts` | `harnessgap init qwen` / `init gigacode` installer: mirrors `initClaude` — writes the same three artifacts (fail-open Stop-hook wrapper, idempotent `hooks.Stop` settings.json merge, `/reflect` command) under `<cwd>/.qwen/` (or `.gigacode/`). Reuses `CLI_PATH`, `buildWrapperSource`, and `mergeStopHook` from `src/init/claude.ts` (Qwen Code's Stop registration shape + payload are byte-identical to Claude's — a Claude Code fork; see file header for the research contract), and `formatStopHookOutput` from `src/output/hook.ts` unchanged. Only `node:fs` + `node:path`. | `initQwen`, `initGigacode` |
 
@@ -131,6 +137,36 @@ reuses the adapter and detector verbatim and only adds persistence.
 10. **Output** — branch by `--calibrate` / `--json` / human. `mode` is read from
     the first record (or `'bootstrap'` when there are none); `outputRepo` is the
     filtered repo (or `''`).
+
+### Multi-harness dispatch (Qwen Code + GigaCode)
+
+The dispatcher seam (`src/adapter/index.ts`, Task 7) wires a `HarnessId` to its
+adapter + walk + install triples behind one `HarnessSpec` interface. The
+pipeline (Task 10) programs against `resolveHarness(id)` + `discoverForSpec(spec)`
++ `spec.streamSession` — no harness `if/switch` in `runScan`/`runReflect`
+themselves. Three contracts in `src/types.ts` pin the seam:
+
+- **`HarnessId`** — `'claude-code' | 'qwen-code' | 'gigacode'`.
+- **`TranscriptLayout`** — `{projectsSegment: 'projects', sessionSubdir?: 'chats', extension: '.jsonl'}`. Two concrete layouts: a flat one (Claude — no subdir) and a `chats/`-subdir one (Qwen + GigaCode).
+- **`CapabilityMatrix`** — Record over seven behavioral axes (`sessionDiscovery`, `streamFormat`, `finalizationSignal`, `interruption`, `fileChangeEvidence`, `resume`, `perPromptContextInjection`). The spec originally marked qwen/gigacode `finalizationSignal` + `perPromptContextInjection` `'pending'` pending verification of Qwen's Stop-hook contract; Task 6 confirmed byte-identical parity (Qwen is a Claude Code fork), so **all three specs carry `ALL_SUPPORTED`** — every cell `'supported'`.
+
+`GIGACODE_SPEC.streamSession` delegates to `streamQwenSession` and rewrites the
+returned `envelope.agent` from `'qwen-code'` to `'gigacode'` — same parser,
+different agent stamp. `CLAUDE_SPEC.installHook` delegates to `initClaude` and
+maps the Claude-specific `InitClaudeResult` (paths only) to the harness-agnostic
+`InitResult` contract. Qwen + GigaCode attach via `initQwen`/`initGigacode`
+unchanged.
+
+**Harness-agnostic core.** Everything downstream of the adapter — detector
+signals (`src/detector/signals.ts`), percentile/bootstrap scorer
+(`src/detector/scoring.ts`), area localization, aggregator, the diagnoser, and
+all three output formatters (human / `--json` / `--calibrate`) — operates on
+`NormalizedEnvelope`/`StruggleRecord` and is invariant to the source harness.
+The only harness-specific code in `src/` lives in the adapter subdirs
+(`src/adapter/{stream,parse,taxonomy}.ts` for Claude;
+`src/adapter/qwen/{stream,parse,taxonomy}.ts` for Qwen/GigaCode), the init
+installers (`src/init/{claude,qwen}.ts`), and the dispatcher
+(`src/adapter/index.ts`).
 
 ## 4. Normalized event schema v1
 
