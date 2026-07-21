@@ -45,7 +45,7 @@ reuses the adapter and detector verbatim and only adds persistence.
 | `src/adapter/taxonomy.ts` | Claude Code tool-name → `ToolKind` map. | `mapToolKind` |
 | `src/adapter/parse.ts` | Per-record normalizer: one parsed JSONL record → one `NormalizedEvent` (or null). Scrubbing + correction flag applied here. | `normalizeRecord` |
 | `src/adapter/stream.ts` | Claude Code streaming JSONL reader (adapter I/O). Size caps, `mergeToolCalls`, envelope assembly. | `streamSession` |
-| `src/adapter/qwen/stream.ts` | Qwen Code transcript stream + merge — mirrors the Claude adapter's size caps (1 MB line / 5000 events / 50 MB file) and envelope shape on Qwen's parallel-call record shape; pins `agent: 'qwen-code'`. Reuses sibling `src/adapter/qwen/parse.ts` + `taxonomy.ts` and the shared `correction.ts`. Not yet wired into `runScan` — a later task in the Qwen+GigaCode slice adds the multi-harness dispatch. | `mergeQwenItems`, `streamQwenSession` |
+| `src/adapter/qwen/stream.ts` | Qwen Code transcript stream + merge — mirrors the Claude adapter's size caps (1 MB line / 5000 events / 50 MB file) and envelope shape on Qwen's parallel-call record shape; pins `agent: 'qwen-code'`. Reuses sibling `src/adapter/qwen/parse.ts` + `taxonomy.ts` and the shared `correction.ts`. Wired into `runScan`/`runReflect` via `resolveHarness('qwen-code')` → `discoverForSpec` + `spec.streamSession` (Task 10 of the Qwen+GigaCode slice). | `mergeQwenItems`, `streamQwenSession` |
 | `src/adapter/correction.ts` | Content-based correction detector: classifies a user message as a course-correction over an additive per-language keyword catalog (EN+RU, Cyrillic-normalized). Emits `{matched, shape}` only — never raw text. | `detectCorrection` |
 | `src/detector/signals.ts` | Pure signal computation: 7 signals from a normalized event stream. | `computeSignals` |
 | `src/detector/scoring.ts` | Pure scorer: percentile-of-composites and bootstrap modes. | `scoreSessions` |
@@ -75,16 +75,22 @@ reuses the adapter and detector verbatim and only adds persistence.
 
 1. **Config** — `loadConfig(opts.configPath)` (`src/pipeline.ts:68`). `ConfigError`
    propagates to the CLI (non-zero exit); `runScan` never catches it.
-2. **Walk** — `discoverTranscripts(claudeDir)` (`src/pipeline.ts:72`) returns
-   sorted `.jsonl` paths + `symlinks_rejected` count. Consumes a claude dir;
-   produces file paths (no contents read).
-3. **Adapter** — per file, `streamSession(file)` (`src/pipeline.ts`) reads
+2. **Walk** — `resolveHarness(harnessId)` (`src/pipeline.ts`) runs once at the
+   top of `runScan`: `harnessId = opts.harness ?? cfg.harness ?? 'claude-code'`
+   (flag → config → `'claude-code'`). The returned `spec` carries the adapter's
+   `streamSession` + transcript `layout` (Qwen/GigaCode use a `chats/` subdir;
+   Claude is flat). `discoverForSpec(spec, rootOverride)` then returns sorted
+   `.jsonl` paths + `symlinks_rejected` count; `rootOverride` is
+   `opts.harnessDir ?? opts.claudeDir` (new flag wins, legacy alias falls
+   through), else `spec.defaultRootDir()` applies. Produces file paths (no
+   contents read). `runReflect` resolves the spec the same way.
+3. **Adapter** — per file, `spec.streamSession(file)` (`src/pipeline.ts`) reads
    line-by-line, applies size caps, calls `normalizeRecord` per line, threads
    `ctx.prevToolCall`, and runs `mergeToolCalls`. Produces a
    `NormalizedEnvelope` + the session's **distinct `cwds` list** + warning
    counts. The adapter stage bundles three sub-steps: **scrub** (in
    `normalizeRecord` via `scrubCmd`/`scrubQuery`/`scrubFiles`), **parse**
-   (`normalizeRecord`), and **stream** (`streamSession` + `mergeToolCalls`).
+   (`normalizeRecord`), and **stream** (`spec.streamSession` + `mergeToolCalls`).
 4. **Repo resolve** — each distinct cwd is tried in turn through
    `resolveRepo(cwd, cache)` (`src/git.ts`) until one resolves to a main
    repo; the first success wins. `envelope.repo` is set to the MAIN repo root
