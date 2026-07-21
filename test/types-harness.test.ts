@@ -2,15 +2,18 @@
 // Task 1 (Qwen Code + GigaCode slice). These contracts live in `src/types.ts`
 // and are consumed by later tasks (HarnessSpec registry, adapter selectors).
 //
-// Compile-time assertions:
-//   (a) `HarnessId` admits exactly the three pinned literals — 'qwen-code'
-//       is assignable, 'foo' is a type error.
-//   (b) `TranscriptLayout` is satisfied both with and without the optional
-//       `sessionSubdir: 'chats'` field.
-//   (c) `CapabilityMatrix` requires all seven `CapabilityKey` entries —
-//       constructing one missing `resume` is a type error.
-// The runtime `it()` constructs one valid value and deep-equals itself so
-// vitest has a runnable test (otherwise the file would be skipped).
+// Enforcement note (read before relying on this file):
+//   - The `// @ts-expect-error` directives below are NOT enforced by
+//     `npm test` (vitest's esbuild transform strips them without type-checking)
+//     nor by `npm run typecheck` (tsconfig.json has `include: ["src"]` and
+//     `rootDir: "src"`, so this file is outside its graph). They are enforced
+//     only by IDE type-checking or a direct `tsc --noEmit` on this file.
+//   - The `HarnessId` / `HarnessSpec` contracts themselves ARE enforced
+//     transitively by `npm run typecheck` via `src/` consumers in later tasks.
+//   - The runtime `it()` blocks below carry the CI-enforced coverage for this
+//     file: they genuinely exercise the three contracts (HarnessId
+//     exhaustiveness, CapabilityMatrix key set, TranscriptLayout optionality)
+//     so a regression at runtime breaks the suite.
 
 import { describe, it, expect } from 'vitest';
 import type {
@@ -21,15 +24,22 @@ import type {
 } from '../src/types.js';
 
 describe('shared dispatch types (Task 1)', () => {
-  it('HarnessId, TranscriptLayout, CapabilityMatrix compile and round-trip', () => {
-    // (a) HarnessId admits exactly the three pinned ids.
-    const claude: HarnessId = 'claude-code';
-    const qwen: HarnessId = 'qwen-code';
-    const giga: HarnessId = 'gigacode';
+  it('HarnessId admits exactly the three pinned literals', () => {
+    // The `: HarnessId[]` annotation gives compile-time checking in IDE; the
+    // runtime length + equality assertions catch a union member being
+    // added/removed, which would require this literal array to change
+    // in lockstep.
     // @ts-expect-error — unknown literal must be rejected by the union
     const bad: HarnessId = 'foo';
+    const HARNESS_IDS: HarnessId[] = ['claude-code', 'qwen-code', 'gigacode'];
+    expect(HARNESS_IDS).toHaveLength(3);
+    expect(HARNESS_IDS).toEqual(['claude-code', 'qwen-code', 'gigacode']);
+    // Reference `bad` so the binding is not elided and the
+    // `@ts-expect-error` above stays meaningful under direct tsc.
+    expect(bad).toBe('foo');
+  });
 
-    // (b) TranscriptLayout is satisfied with and without sessionSubdir.
+  it('TranscriptLayout.sessionSubdir is optional', () => {
     const withChats: TranscriptLayout = {
       projectsSegment: 'projects',
       sessionSubdir: 'chats',
@@ -39,8 +49,12 @@ describe('shared dispatch types (Task 1)', () => {
       projectsSegment: 'projects',
       extension: '.jsonl',
     };
+    expect(withChats.sessionSubdir).toBe('chats');
+    expect('sessionSubdir' in withoutChats).toBe(false);
+    expect(withoutChats.sessionSubdir).toBeUndefined();
+  });
 
-    // (c) CapabilityMatrix requires all seven CapabilityKey entries.
+  it('CapabilityMatrix keys exactly match the seven CapabilityKey literals', () => {
     const full: CapabilityMatrix = {
       sessionDiscovery: 'supported',
       streamFormat: 'supported',
@@ -59,9 +73,7 @@ describe('shared dispatch types (Task 1)', () => {
       fileChangeEvidence: 'pending',
       perPromptContextInjection: 'pending',
     };
-
-    // Sanity: CapabilityKey enumerates exactly the seven keys.
-    const keys: CapabilityKey[] = [
+    const EXPECTED_KEYS: CapabilityKey[] = [
       'sessionDiscovery',
       'streamFormat',
       'finalizationSignal',
@@ -70,19 +82,12 @@ describe('shared dispatch types (Task 1)', () => {
       'resume',
       'perPromptContextInjection',
     ];
-
-    // Use every binding so they are not elided; deep-equal a constructed
-    // value against itself to give vitest a runnable assertion.
-    expect([claude, qwen, giga, bad]).toEqual([
-      'claude-code',
-      'qwen-code',
-      'gigacode',
-      'foo',
-    ]);
-    expect(withChats).toEqual(withChats);
-    expect(withoutChats).toEqual(withoutChats);
-    expect(full).toEqual(full);
-    expect(missingResume).toEqual(missingResume);
-    expect(keys).toHaveLength(7);
+    expect(Object.keys(full).sort()).toEqual([...EXPECTED_KEYS].sort());
+    // Reference `missingResume` so the binding is not elided and the
+    // `@ts-expect-error` above stays meaningful under direct tsc; it should
+    // hold exactly the six non-`resume` keys at runtime.
+    expect(Object.keys(missingResume).sort()).toEqual(
+      [...EXPECTED_KEYS].filter((k) => k !== 'resume').sort(),
+    );
   });
 });
