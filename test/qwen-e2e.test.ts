@@ -32,7 +32,7 @@ import {
   qwenStruggleSlug,
   qwenStruggleSession,
 } from './fixtures/qwen/sessions.js';
-import { writeFileSync, mkdirSync } from 'node:fs';
+import { writeFileSync, mkdirSync, appendFileSync } from 'node:fs';
 import type { JsonOutput } from '../src/types.js';
 
 afterEach(cleanupTempDirs);
@@ -174,7 +174,39 @@ describe('qwen builder privacy (Task 12)', () => {
       { kind: 'edit', file: 'src/billing/a.ts', newString: 'y' },
     ];
     const spec: SessionSpec = { name: 'priv', events };
-    writeQwenTranscript(qwenRoot, 'priv-slug', 'priv', mkQwenSession(repo, spec));
+    const privFile = writeQwenTranscript(
+      qwenRoot,
+      'priv-slug',
+      'priv',
+      mkQwenSession(repo, spec),
+    );
+
+    // Spec §10 privacy vector: a user record carrying functionResponse with
+    // the marker in `response.output`. The parser drops functionResponse-
+    // carrying user records at src/adapter/qwen/parse.ts (the result-carrier
+    // branch), so the marker must remain absent from every output mode.
+    // Appended after the exec's tool_result (real-data shape: the function
+    // response mirrors the functionCall that preceded it).
+    appendFileSync(
+      privFile,
+      JSON.stringify({
+        type: 'user',
+        timestamp: '2026-07-12T12:00:05.000Z',
+        cwd: repo,
+        message: {
+          role: 'user',
+          parts: [
+            {
+              functionResponse: {
+                name: 'run_shell_command',
+                response: { output: `${MARKER}` },
+              },
+            },
+          ],
+        },
+      }) + '\n',
+      'utf8',
+    );
 
     for (const { label, opts } of [
       { label: 'human', opts: {} },
