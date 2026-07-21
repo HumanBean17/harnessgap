@@ -360,6 +360,36 @@ describe('harnessgap CLI harness flags + widened init (Task 9)', () => {
     expect(stdout).toContain('1 sessions');
   });
 
+  it('4b. scan --claude-dir <root> + config harness:qwen-code → resolves to claude-code (Claude layout scanned, not Qwen)', async () => {
+    // Regression: with config `harness: qwen-code` set, `--claude-dir <root>`
+    // (no --harness flag) used to pick qwen-code from config, dispatch Qwen on
+    // the Claude dir, find 0 chats/ sessions, and exit 0 with an empty
+    // leaderboard — silent failure. The implicit-claude-code rule now wins
+    // over cfgHarness, so the Claude layout is scanned and the seeded session
+    // is found.
+    const { repo, claudeDir } = setupClaudeFixture();
+    const cfgDir = makeTempDir('cfg');
+    const cfgPath = join(cfgDir, '.harnessgap.yml');
+    writeFileSync(cfgPath, 'harness: qwen-code\n', 'utf8');
+
+    const { stdout, stderr, code } = await runCli([
+      'scan',
+      '--repo',
+      repo,
+      '--config',
+      cfgPath,
+      '--claude-dir',
+      claudeDir,
+    ]);
+
+    expect(code).toBe(0);
+    expect(stderr).toBe('');
+    // The Claude-layout fixture (1 session at projects/slug/sess1.jsonl) is
+    // discovered — NOT the Qwen chats/ layout (which would yield 0 sessions).
+    expect(stdout).toContain('1 sessions');
+    expect(stdout).toMatch(/src\/billing|No flagged areas/);
+  });
+
   it('5. init qwen / init gigacode / init wat — writes + unsupported-agent error', async () => {
     // init qwen writes under <cwd>/.qwen/ (non-degraded verified branch).
     const qwenCwd = makeTempDir('init-qwen');

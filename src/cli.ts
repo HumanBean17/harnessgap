@@ -130,12 +130,15 @@ function validateHarnessFlags(
 /**
  * Qwen+GigaCode slice Task 9: resolve the harness id + dir per the documented
  * precedence for `scan`. Precedence for the harness id: `--harness` flag →
+ * (implicit claude-code when `--claude-dir` is passed without a flag) →
  * `config.harness` → `'claude-code'` (the last is belt-and-suspenders;
  * `cfg.harness` is always populated by `loadConfig` via `DEFAULT_CONFIG`).
- * `--claude-dir` does NOT count as a harness flag — it is a deprecated alias
- * for `--harness claude-code --harness-dir <path>`, so it contributes the dir
- * AND implies claude-code for the alias's interpretation, but an explicit
- * `--harness` always wins.
+ * `--claude-dir` does NOT count as a harness flag for the conflict rule
+ * (validateHarnessFlags enforces that), but it DOES imply claude-code for
+ * resolution: a user running `scan --claude-dir /path` while their config
+ * says `harness: qwen-code` almost certainly wants the Claude layout at that
+ * dir, not a Qwen dispatch that finds 0 `chats/` sessions and exits 0 with
+ * an empty leaderboard (silent failure). An explicit `--harness` always wins.
  */
 function resolveHarnessForCommand(
   harnessFlag: string | undefined,
@@ -148,7 +151,10 @@ function resolveHarnessForCommand(
     harnessDir,
     claudeDir,
   );
-  return { harness: harness ?? cfgHarness, harnessDir: resolvedDir };
+  return {
+    harness: harness ?? (claudeDir !== undefined ? 'claude-code' : cfgHarness),
+    harnessDir: resolvedDir,
+  };
 }
 
 const program = new Command();
