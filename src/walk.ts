@@ -1,14 +1,17 @@
-// Transcript discovery — finds every *.jsonl under
-// <claudeDir>/projects/*/*.jsonl (exactly one session-dir level under
-// projects/). Security-critical: NEVER follows symlinks.
+// Transcript discovery — finds every *.jsonl session file under a harness
+// root. The default (Claude) layout reads `<rootDir>/projects/<slug>/*.jsonl`
+// (exactly one session-dir level under projects/). The Qwen/GigaCode layout
+// adds an extra `chats/` subdir: `<rootDir>/projects/<slug>/chats/*.jsonl`.
+// Security-critical: NEVER follows symlinks.
 //
 // - Directory traversal uses readdir(withFileTypes): Dirent.isDirectory() is
-//   false for symlinks (even symlinks-to-dirs), so symlinked session-dirs are
-//   skipped at the directory level — never entered, never realpath'd.
+//   false for symlinks (even symlinks-to-dirs), so symlinked slug-dirs and
+//   symlinked session-subdirs are skipped at the directory level — never
+//   entered, never realpath'd.
 // - Each .jsonl candidate is lstat'd (not stat'd): a symlink .jsonl is rejected
 //   and counted in symlinks_rejected regardless of where it points.
 // - A defensive prefix-confinement check rejects any resolved path that escapes
-//   <claudeDir>/projects/ (guards against `..`-style traversal in dir names,
+//   <rootDir>/projects/ (guards against `..`-style traversal in dir names,
 //   which readdir itself never produces but we verify anyway).
 //
 // Does NOT read file contents (streamSession in adapter/stream.ts does that).
@@ -22,26 +25,52 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as os from 'node:os';
+import type { HarnessId, TranscriptLayout } from './types.js';
 
-/** Default Claude config directory: `~/.claude`. */
-export function defaultClaudeDir(): string {
-  return path.join(os.homedir(), '.claude');
+/** Default per-harness config directory under the user's home. */
+export function defaultRootDir(id: HarnessId): string {
+  const sub =
+    id === 'claude-code' ? '.claude'
+    : id === 'qwen-code' ? '.qwen'
+    : '.gigacode'; // gigacode
+  return path.join(os.homedir(), sub);
 }
 
 /**
- * Discover all .jsonl transcripts under <claudeDir>/projects/<slug>/<file>.jsonl
- * (exactly one session-dir level under projects/). Rejects symlinks (lstat,
+ * @deprecated Thin alias for `defaultRootDir('claude-code')`. Retained so
+ * existing single-layout callers (src/pipeline.ts) keep working until the
+ * multi-harness dispatch lands (Task 10).
+ */
+export function defaultClaudeDir(): string {
+  return defaultRootDir('claude-code');
+}
+
+const CLAUDE_LAYOUT: TranscriptLayout = {
+  projectsSegment: 'projects',
+  extension: '.jsonl',
+};
+
+/**
+ * Discover all .jsonl transcripts under
+ * `<rootDir>/projects/<slug>/<file>.jsonl` (Claude layout, the default) or
+ * `<rootDir>/projects/<slug>/<sessionSubdir>/<file>.jsonl` when
+ * `layout.sessionSubdir` is present (Qwen/GigaCode). Rejects symlinks (lstat,
  * never followed) and confines results to the projects/ prefix. Fail-open on
  * missing projects/ dir.
+ *
+ * `layout` defaults to the Claude layout so existing single-argument callers
+ * keep working unchanged.
  */
 export function discoverTranscripts(
-  claudeDir: string,
+  rootDir: string,
+  layout: TranscriptLayout = CLAUDE_LAYOUT,
 ): { files: string[]; symlinks_rejected: number } {
   const files: string[] = [];
   let symlinks_rejected = 0;
 
-  const projectsDir = path.resolve(claudeDir, 'projects');
+  const projectsDir = path.resolve(rootDir, layout.projectsSegment);
   const prefix = projectsDir + path.sep;
+  const extension = layout.extension;
 
   let topEntries: fs.Dirent[];
   try {
@@ -52,12 +81,35 @@ export function discoverTranscripts(
   }
 
   for (const dirent of topEntries) {
-    // Exactly one session-dir level under projects/. isDirectory() is false
-    // for symlinks, so symlinked session-dirs are skipped here without being
-    // traversed or realpath'd.
+    // Slug-dir level. isDirectory() is false for symlinks, so symlinked
+    // slug-dirs are skipped here without being traversed or realpath'd.
     if (!dirent.isDirectory()) continue;
 
-    const sessionDir = path.join(projectsDir, dirent.name);
+    const slugDir = path.join(projectsDir, dirent.name);
+    // When sessionSubdir is set (Qwen/GigaCode), session files live one level
+    // deeper under `<slugDir>/<sessionSubdir>/`; otherwise they sit directly
+    // under `<slugDir>/` (Claude layout). The session-subdir — when present —
+    // must itself be a real directory (Dirent.isDirectory() is false for
+    // symlinks), so a symlinked `chats/` is rejected here without traversal.
+    let sessionDir: string;
+    if (layout.sessionSubdir) {
+      const subdirPath = path.join(slugDir, layout.sessionSubdir);
+      let subdirDirent: fs.Dirent | undefined;
+      try {
+        // readdir the slug to read the subdir entry as a Dirent — this lets us
+        // apply the same isDirectory() (not symlink) invariant used at the
+        // slug level. A missing or unreadable slug-dir is skipped.
+        const slugEntries = fs.readdirSync(slugDir, { withFileTypes: true });
+        subdirDirent = slugEntries.find((e) => e.name === layout.sessionSubdir);
+      } catch {
+        continue; // unreadable slug-dir — skip
+      }
+      if (!subdirDirent || !subdirDirent.isDirectory()) continue; // missing or symlinked/regular-file sessionSubdir
+      sessionDir = subdirPath;
+    } else {
+      sessionDir = slugDir;
+    }
+
     let sessionEntries: fs.Dirent[];
     try {
       sessionEntries = fs.readdirSync(sessionDir, { withFileTypes: true });
@@ -66,7 +118,7 @@ export function discoverTranscripts(
     }
 
     for (const fe of sessionEntries) {
-      if (!fe.name.endsWith('.jsonl')) continue;
+      if (!fe.name.endsWith(extension)) continue;
 
       const candidate = path.join(sessionDir, fe.name);
       let st: fs.Stats;
