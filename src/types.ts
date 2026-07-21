@@ -84,10 +84,78 @@ export interface NormalizedEvent {
   correction: Correction | null;
 }
 
+// Multi-harness dispatch seam (Qwen Code + GigaCode slice, Task 1). The
+// contracts below are pinned verbatim against the slice spec; later tasks
+// consume them via the HarnessSpec registry and adapter selectors. Field
+// names are contracts — do not rename.
+
+/** The closed set of harness backends harnessgap can read transcripts from. */
+export type HarnessId = 'claude-code' | 'qwen-code' | 'gigacode';
+
+/**
+ * On-disk transcript layout for a harness. `projectsSegment` is the literal
+ * directory name; `sessionSubdir` is optional (present for Claude Code's
+ * `projects/<proj>/chats` layout, absent for flatter layouts); `extension`
+ * is pinned to `.jsonl` for v1.
+ */
+export interface TranscriptLayout {
+  projectsSegment: 'projects';
+  sessionSubdir?: 'chats';
+  extension: '.jsonl';
+}
+
+/**
+ * Closed enumeration of the seven behavioral axes a harness may or may not
+ * support. Keys are contracts — later tasks index `CapabilityMatrix` by them.
+ */
+export type CapabilityKey =
+  | 'sessionDiscovery'
+  | 'streamFormat'
+  | 'finalizationSignal'
+  | 'interruption'
+  | 'fileChangeEvidence'
+  | 'resume'
+  | 'perPromptContextInjection';
+
+/** Per-harness capability state; every `CapabilityKey` must be present. */
+export type CapabilityMatrix = Record<CapabilityKey, 'supported' | 'pending'>;
+
+/**
+ * Return value of `HarnessSpec.installHook`. `artifacts` are the repo-relative
+ * (or absolute) paths of files written during install; `settingsBackupPath`
+ * is present only when an existing settings file was backed up; `degraded`
+ * flags environments where the hook cannot be installed (e.g. unsupported
+ * harness); `message` is a single-line human-readable status.
+ */
+export interface InitResult {
+  harness: HarnessId;
+  artifacts: string[];
+  settingsBackupPath?: string;
+  degraded: boolean;
+  message: string;
+}
+
+/**
+ * The dispatch seam: each harness backend implements this interface. The
+ * registry (added in a later task) selects a spec by `id`. `defaultRootDir`
+ * is a function so the spec can defer filesystem/env reads until invoked
+ * (no I/O at module load). Stream/install are stubs filled in by later
+ * tasks — declared here so consumers can program against the seam today.
+ */
+export interface HarnessSpec {
+  id: HarnessId;
+  displayName: string;
+  defaultRootDir(): string;
+  layout: TranscriptLayout;
+  streamSession(filePath: string): NormalizedEnvelope;
+  installHook(opts: { cwd: string }): InitResult;
+  capabilities: CapabilityMatrix;
+}
+
 export interface NormalizedEnvelope {
   schema_version: 1;
   session_id: string;
-  agent: 'claude-code';
+  agent: HarnessId;
   repo: string;
   started_at: string;
   duration_ms: number;
