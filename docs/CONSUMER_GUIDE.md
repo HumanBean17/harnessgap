@@ -1,15 +1,17 @@
 # harnessgap — Consumer Guide
 
-A stateless, detection-only CLI that reads Claude Code transcript logs and
-produces a **struggle leaderboard** — the areas of a repo where Claude Code
-sessions show deterministic signals of friction (rereads, failure streaks,
-oscillating edits, abandonment, and more).
+A stateless, detection-only CLI that reads agent transcript logs — **Claude
+Code** (the default), **Qwen Code**, and **GigaCode** — and produces a
+**struggle leaderboard** — the areas of a repo where sessions show
+deterministic signals of friction (rereads, failure streaks, oscillating
+edits, abandonment, and more).
 
 The **default `scan` path is detection-only**: it **writes nothing, installs
-nothing, persists nothing** — it reads transcripts under
-`~/.claude/projects/` and prints a leaderboard to stdout. Cause attribution
-is available as an opt-in via `scan --diagnose` (Slice 4); synthesis, routing,
-and measurement are deferred to later slices.
+nothing, persists nothing** — it reads transcripts (under `~/.claude/projects/`
+by default; `--harness <id>` selects Qwen Code or GigaCode) and prints a
+leaderboard to stdout. Cause attribution is available as an opt-in via
+`scan --diagnose` (Slice 4); synthesis, routing, and measurement are deferred
+to later slices.
 
 For a one-page summary see [README.md](../README.md). For internals see
 [ARCHITECTURE.md](ARCHITECTURE.md).
@@ -40,7 +42,8 @@ Requires **Node >= 22.12** (the `commander` 15 dependency requires it).
 
 ## Quick start
 
-From inside a git repository that you work on with Claude Code:
+From inside a git repository that you work on with Claude Code (the default
+harness):
 
 ```
 harnessgap scan
@@ -48,6 +51,8 @@ harnessgap scan
 
 This walks every Claude Code session whose resolved main-repo root matches the
 current repo, runs the detector, and prints a leaderboard of struggle areas.
+Use `--harness qwen-code` or `--harness gigacode` to scan Qwen Code or
+GigaCode transcripts instead.
 
 ---
 
@@ -71,7 +76,9 @@ harnessgap scan [options]
 | `--bootstrap` | off | Force bootstrap (absolute-threshold) scoring instead of percentile. |
 | `--diagnose` | off | Classify each flagged area into a typed cause (`doc` / `config-doc` / `test-gap` / `refactor-flag` / `inherent-complexity`) or `unclassified`. Adds a `CAUSE` column to the table and a `diagnoses` field to `--json`. Reads `docs/` for grounding. |
 | `--config <path>` | `.harnessgap.yml` in cwd | Path to a config file. |
-| `--claude-dir <path>` | `~/.claude` | Claude Code config directory (contains `projects/`). |
+| `--harness <id>` | `claude-code` | Harness backend to scan: `claude-code` \| `qwen-code` \| `gigacode`. Selects the transcript layout + parser. |
+| `--harness-dir <path>` | per `--harness` | Harness config directory (contains `projects/`). Default `~/.claude` \| `~/.qwen` \| `~/.gigacode`. |
+| `--claude-dir <path>` | `~/.claude` | **Deprecated alias** for `--harness claude-code --harness-dir <path>`. Conflicts with `--harness qwen-code\|gigacode`. |
 | `--version` | — | Print the harnessgap version and exit. |
 | `--help` | — | Print help and exit. |
 
@@ -99,11 +106,12 @@ harnessgap scan --limit 50
 ## Configuration (`.harnessgap.yml`)
 
 Optional. `scan` runs with built-in defaults if no file is present. The file is a
-YAML object with four top-level keys — `detector`, `areas`, `docs_dirs`, and
-`diagnose`. Anything else is **rejected**. Values are deep-merged over the
-defaults (arrays replace, they do not concatenate).
+YAML object with five top-level keys — `harness`, `detector`, `areas`,
+`docs_dirs`, and `diagnose`. Anything else is **rejected**. Values are
+deep-merged over the defaults (arrays replace, they do not concatenate).
 
 ```yaml
+harness: claude-code                 # claude-code (default) | qwen-code | gigacode; --harness flag overrides
 detector:
   thresholds_as: percentile        # percentile (default) | absolute
   flag_pct: 90                     # percentile mode: flag the top (100 - flag_pct)% of composites
@@ -300,8 +308,9 @@ Use `--calibrate` to see which mode is active and the distributions behind it.
 Slice 3 adds an **event-driven** entry to the detector: instead of a batch
 leaderboard, `harnessgap reflect` runs the detector on a **single** session and
 emits a `ReflectFinding` whose `trip = flagged && !zero_edit` decides whether to
-prompt reflection. `harnessgap init claude` wires it into a trip-gated Claude
-Code `Stop` hook so reflection happens automatically when a session ends.
+prompt reflection. `harnessgap init claude` / `init qwen` / `init gigacode`
+wire it into a trip-gated `Stop` hook (Claude Code, Qwen Code, or GigaCode
+respectively) so reflection happens automatically when a session ends.
 
 The detection core is unchanged — `reflect` reuses the same detector and
 bootstrap mode as `scan`. No new config keys, no new dependencies.
@@ -309,10 +318,13 @@ bootstrap mode as `scan`. No new config keys, no new dependencies.
 ### Install the hook
 
 ```
-harnessgap init claude
+harnessgap init claude     # default; installs under <cwd>/.claude/
+harnessgap init qwen       # installs under <cwd>/.qwen/
+harnessgap init gigacode   # installs under <cwd>/.gigacode/
 ```
 
-Writes three artifacts under `<cwd>/.claude/` (idempotent — safe to re-run):
+All three install the same three artifacts under the chosen harness dir
+(idempotent — safe to re-run):
 
 - **fail-open Stop-hook wrapper** (`harnessgap-stop-hook.js`) — on every stop it
   runs `harnessgap reflect --transcript <just-finished> --format hook-stop`. Any
@@ -358,7 +370,9 @@ The agent presents the recommendation in-session and the user acts on it —
 | `--stop-hook-active` | off | Mark the Claude Code Stop hook as already active (short-circuit to allow). |
 | `--format <json\|hook-stop>` | `json` | Output form: the json `ReflectFinding` or the `Stop` hook payload. |
 | `--config <path>` | `.harnessgap.yml` in cwd | Path to a config file. |
-| `--claude-dir <path>` | `~/.claude` | Claude Code config directory (contains `projects/`). |
+| `--harness <id>` | auto-detect | Harness backend: `claude-code` \| `qwen-code` \| `gigacode`. When omitted, `reflect` auto-detects from the transcript shape. |
+| `--harness-dir <path>` | per `--harness` | Harness config directory (contains `projects/`). Default per `--harness`. |
+| `--claude-dir <path>` | `~/.claude` | **Deprecated alias** for `--harness claude-code --harness-dir <path>`. |
 
 ### `ReflectFinding` (`--format json`)
 
@@ -525,8 +539,8 @@ and `test/egress.test.ts` (no `src/` file imports a network module or calls
 ## Validating on your repo (the dogfood gate)
 
 The detection leaderboard is validated by a **manual dogfood gate**, not an
-automated test. On a real repo with rich Claude Code session history, prepare
-in advance:
+automated test. On a real repo with rich session history for any supported
+harness (Claude Code, Qwen Code, or GigaCode), prepare in advance:
 
 - **>= 5 areas you recall as struggle**, and
 - **>= 5 areas you recall as non-struggle.**
@@ -547,10 +561,12 @@ The labeled fixture corpus and snapshot test (`test/corpus.test.ts`,
 **"No sessions found" / `session_count: 0`**
 Check `--repo` (it's resolved to the project's main repo, so a worktree path or
 subdirectory also works — but a path in a totally different project won't match),
-`--claude-dir` (must be the Claude Code config dir containing
-`projects/`, default `~/.claude`), and `--since` (too short a window excludes
-older sessions). Run `harnessgap scan --calibrate` to confirm the session count
-and mode.
+`--harness` (must match the harness that produced the transcripts:
+`claude-code`, `qwen-code`, or `gigacode`; default `claude-code`) and
+`--harness-dir` (the harness config dir containing `projects/`, default
+`~/.claude` / `~/.qwen` / `~/.gigacode` per `--harness`), and `--since` (too
+short a window excludes older sessions). Run `harnessgap scan --calibrate` to
+confirm the session count and mode.
 
 **Scores look wrong / everything flagged or nothing flagged**
 Inspect the distributions with `--calibrate`. If you have fewer than
