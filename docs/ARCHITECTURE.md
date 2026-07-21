@@ -44,7 +44,8 @@ reuses the adapter and detector verbatim and only adds persistence.
 | `src/adapter/scrub.ts` | Pattern-catalog secret scrubber (7 rules). No entropy heuristic. | `scrubCmd`, `scrubQuery`, `scrubFiles` |
 | `src/adapter/taxonomy.ts` | Claude Code tool-name → `ToolKind` map. | `mapToolKind` |
 | `src/adapter/parse.ts` | Per-record normalizer: one parsed JSONL record → one `NormalizedEvent` (or null). Scrubbing + correction flag applied here. | `normalizeRecord` |
-| `src/adapter/stream.ts` | Streaming JSONL reader (the only adapter I/O). Size caps, `mergeToolCalls`, envelope assembly. | `streamSession` |
+| `src/adapter/stream.ts` | Claude Code streaming JSONL reader (adapter I/O). Size caps, `mergeToolCalls`, envelope assembly. | `streamSession` |
+| `src/adapter/qwen/stream.ts` | Qwen Code transcript stream + merge — mirrors the Claude adapter's size caps (1 MB line / 5000 events / 50 MB file) and envelope shape on Qwen's parallel-call record shape; pins `agent: 'qwen-code'`. Reuses sibling `src/adapter/qwen/parse.ts` + `taxonomy.ts` and the shared `correction.ts`. Not yet wired into `runScan` — a later task in the Qwen+GigaCode slice adds the multi-harness dispatch. | `mergeQwenItems`, `streamQwenSession` |
 | `src/adapter/correction.ts` | Content-based correction detector: classifies a user message as a course-correction over an additive per-language keyword catalog (EN+RU, Cyrillic-normalized). Emits `{matched, shape}` only — never raw text. | `detectCorrection` |
 | `src/detector/signals.ts` | Pure signal computation: 7 signals from a normalized event stream. | `computeSignals` |
 | `src/detector/scoring.ts` | Pure scorer: percentile-of-composites and bootstrap modes. | `scoreSessions` |
