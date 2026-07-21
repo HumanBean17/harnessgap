@@ -250,6 +250,50 @@ describe('parseQwenRecord — argsKey matching contract (Task 5 merge seam)', ()
     const tel = telItems[0] as Extract<AnyItem, { kind: 'telemetry_tool' }>;
     expect(tel.argsKey).toBe(call.argsKey);
   });
+
+  it('argless tool_call and telemetry_tool produce identical argsKey ("{}") for missing/null args', () => {
+    // Regression pin: the `tool_call` side coerces missing/non-object args to
+    // `{}`, the `telemetry_tool` side must do the same — otherwise an argless
+    // call yields `'{}'` on one side and `'null'` on the other, silently
+    // breaking the Task-5 merge for argless tools.
+    const callFor = (argsField: unknown) =>
+      parseQwenRecord({
+        type: 'assistant',
+        timestamp: TS,
+        cwd: CWD,
+        message: {
+          role: 'model',
+          parts: [{ functionCall: { id: 'call_A', name: 'list_directory', args: argsField } }],
+        },
+      })[0] as Extract<AnyItem, { kind: 'tool_call' }>;
+
+    const telemetryFor = (argsField: unknown) =>
+      parseQwenRecord({
+        type: 'system',
+        subtype: 'ui_telemetry',
+        timestamp: TS,
+        cwd: CWD,
+        systemPayload: {
+          uiEvent: {
+            'event.name': 'qwen-code.tool_call',
+            function_name: 'list_directory',
+            function_args: argsField,
+            duration_ms: 1,
+            success: true,
+          },
+        },
+      })[0] as Extract<AnyItem, { kind: 'telemetry_tool' }>;
+
+    // Missing args (absent field simulated via undefined) AND explicit null —
+    // both sides must serialize to the same `'{}'` string.
+    for (const missingArgs of [undefined, null] as const) {
+      const call = callFor(missingArgs);
+      const tel = telemetryFor(missingArgs);
+      expect(call.argsKey).toBe('{}');
+      expect(tel.argsKey).toBe('{}');
+      expect(call.argsKey).toBe(tel.argsKey);
+    }
+  });
 });
 
 describe('parseQwenRecord — inputDigest extraction (spec §5.3 table)', () => {

@@ -258,7 +258,12 @@ export function parseQwenRecord(raw: unknown): QwenParsedItem[] {
     const name = typeof ui['event.name'] === 'string' ? ui['event.name'] : '';
     if (name === UI_EVENT_NAME.TOOL_CALL) {
       const toolName = typeof ui.function_name === 'string' ? ui.function_name : '';
-      const argsKey = stableArgsKey(ui.function_args ?? null);
+      // Coerce missing/non-object args to `{}` — mirrors the `tool_call` side
+      // so an argless call yields argsKey `'{}'` on BOTH item kinds and the
+      // Task-5 merge matches them. Without this, telemetry would serialize to
+      // `'null'` and silently fail to pair with its `tool_call`.
+      const args = isObject(ui.function_args) ? ui.function_args : {};
+      const argsKey = stableArgsKey(args);
       const durationMs = typeof ui.duration_ms === 'number' ? ui.duration_ms : 0;
       const success = ui.success === true;
       return [{ kind: 'telemetry_tool', toolName, argsKey, durationMs, success, t }];
