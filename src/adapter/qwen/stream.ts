@@ -15,9 +15,13 @@
 //                                 the interrupt taints subsequent calls until
 //                                 the next user_msg clears it.
 //       * user_msg / assistant_msg : empty input_digest, ok:true, duration_ms:0.
-//     Parallel calls (multiple functionCall parts in one assistant turn — common
-//     in real Qwen transcripts) resolve INDEPENDENTLY by callId; the argsKey
-//     disambiguates same-tool calls within a turn.
+//     Resolution precision: `ok` resolves INDEPENDENTLY by callId (each call
+//     finds its own result). `duration_ms` resolves by `(toolName, argsKey)`
+//     with consumption tracking — multiple calls sharing the same
+//     `(toolName, argsKey)` (e.g., two read_file calls with identical args but
+//     distinct callIds in one turn) pair to DISTINCT telemetry items in
+//     encounter order; calls with different `(toolName, argsKey)` consume from
+//     their own group.
 //
 //   - streamQwenSession(filePath): NormalizedEnvelope  — I/O: readline + size
 //     caps + envelope assembly. Reuses the SAME cap values as Claude's
@@ -82,6 +86,11 @@ export function mergeQwenItems(
   // Most-recent tool_call tool seen before the next user_msg — threaded into
   // detectCorrection exactly as Claude's parser threads prevToolCall.
   let prevTool: { tool: ToolKind } | null = null;
+  // Indices of telemetry_tool items already bound to a tool_call's duration, so
+  // that two calls sharing `(toolName, argsKey)` pair to DISTINCT telemetries
+  // in encounter order (first call → first telemetry, second call → second).
+  // See findDurationForCall.
+  const consumedTelemetry = new Set<number>();
   // Interrupt taint: set by an `interrupt` item, cleared by the next user_msg.
   // A tool_call inherits the current flag — i.e., an interrupt marks all
   // SUBSEQUENT tool_calls as interrupted until the user re-engages. This matches
@@ -90,6 +99,18 @@ export function mergeQwenItems(
   // interrupted; call_A at index 0 is not). The brief's prose wording ("at or
   // after this tool_call") is inverted relative to the scenario; the scenario
   // is treated as authoritative.
+  //
+  // ADJUDICATION (review round 1): `NormalizedEvent.interrupted` is currently
+  // NOT read by any detector signal (`grep -rn "\\.interrupted" src/detector/`
+  // is empty; `abandonment` is computed from explore/edit tail patterns in
+  // src/detector/signals.ts, not from this field) — the field is set here for
+  // schema completeness only, so the current forward-taint reading has zero
+  // output impact. The forward-taint mechanism is preserved unchanged and
+  // matches test/qwen-stream.test.ts scenario 4. The correct semantic for
+  // Qwen's turn-level aborts is deferred as an open question (spec §11:
+  // "User interrupts may not be recorded in transcripts ... the interrupt
+  // channel is best-effort"). Do not alter the forward-taint logic without
+  // revisiting the detector's consumption of this field.
   let interruptedFlag = false;
 
   for (let i = 0; i < items.length; i++) {
@@ -125,7 +146,13 @@ export function mergeQwenItems(
     if (item.kind === 'tool_call') {
       const tool = mapQwenToolKind(item.toolName);
       const ok = findOkForCall(items, item.callId);
-      const duration_ms = findDurationForCall(items, i, item.toolName, item.argsKey);
+      const duration_ms = findDurationForCall(
+        items,
+        i,
+        item.toolName,
+        item.argsKey,
+        consumedTelemetry,
+      );
       events.push({
         t: item.t,
         kind: 'tool_call',
@@ -162,24 +189,31 @@ function findOkForCall(items: QwenParsedItem[], callId: string): boolean {
 }
 
 /**
- * Find the durationMs of the first telemetry_tool AFTER index `i` whose
- * (toolName, argsKey) matches this call. Returns 0 if none. The contract pins
- * (toolName, argsKey) as the authority for duration, scanning forward only —
- * matches the real-data interleaving (call → telemetry, in that order).
+ * Find the durationMs of the first UNCONSUMED telemetry_tool AFTER index `i`
+ * whose (toolName, argsKey) matches this call; mark it consumed so the next
+ * call with the same (toolName, argsKey) binds to the subsequent telemetry.
+ * Returns 0 if none. The contract pins (toolName, argsKey) as the authority
+ * for duration, scanning forward only — matches the real-data interleaving
+ * (call → telemetry, in that order). Consumption tracking is what makes two
+ * identical-args calls pair to DISTINCT telemetries in order rather than both
+ * binding to the first.
  */
 function findDurationForCall(
   items: QwenParsedItem[],
   i: number,
   toolName: string,
   argsKey: string,
+  consumedTelemetry: Set<number>,
 ): number {
   for (let j = i + 1; j < items.length; j++) {
+    if (consumedTelemetry.has(j)) continue;
     const it = items[j]!;
     if (
       it.kind === 'telemetry_tool' &&
       it.toolName === toolName &&
       it.argsKey === argsKey
     ) {
+      consumedTelemetry.add(j);
       return it.durationMs;
     }
   }

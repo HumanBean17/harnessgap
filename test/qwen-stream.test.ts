@@ -138,6 +138,32 @@ describe('mergeQwenItems — matching contract', () => {
     expect(b!.interrupted).toBe(false);
   });
 
+  it('2b. identical-args parallel calls → DISTINCT durations in encounter order (consumption tracking)', () => {
+    // Regression for review round 1 finding 1: two tool_calls sharing the SAME
+    // (toolName, argsKey) but different callIds, plus two telemetries (30ms then
+    // 40ms). Without consumption tracking both calls bound to the FIRST
+    // telemetry (30ms). The contract requires distinct pairing in order.
+    const items: QwenParsedItem[] = [
+      toolCall('call_A', 'read_file', 'K', EMPTY_DIGEST, TS1),
+      toolCall('call_B', 'read_file', 'K', EMPTY_DIGEST, TS1),
+      telemetryTool('read_file', 'K', 30, true, TS2),
+      telemetryTool('read_file', 'K', 40, true, TS2),
+      toolResult('call_A', true, TS3),
+      toolResult('call_B', true, TS3),
+    ];
+    const events = mergeQwenItems(items, META);
+    expect(events).toHaveLength(2);
+    const [a, b] = events;
+    expect(a!.tool).toBe('read');
+    expect(a!.ok).toBe(true);
+    expect(a!.duration_ms).toBe(30); // first call → first telemetry
+    expect(a!.interrupted).toBe(false);
+    expect(b!.tool).toBe('read');
+    expect(b!.ok).toBe(true);
+    expect(b!.duration_ms).toBe(40); // second call → second telemetry (DISTINCT)
+    expect(b!.interrupted).toBe(false);
+  });
+
   it('3. unresolved call (no matching tool_result) → ok:false, duration_ms:0', () => {
     const items: QwenParsedItem[] = [
       toolCall('call_C', 'read_file', 'K', EMPTY_DIGEST, TS1),
