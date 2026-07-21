@@ -144,22 +144,56 @@ export interface InitResult {
  *
  * `streamSession` is async because every real implementation reads a file
  * (Claude's `src/adapter/stream.ts`, Qwen/GigaCode's `src/adapter/qwen/stream.ts`).
- * The Task-1 contract wrote `: NormalizedEnvelope` (sync); Task 7 widens it to
- * `Promise<NormalizedEnvelope>` so the existing async readers attach to the
- * spec without a redundant sync wrapper. The return is the envelope alone —
- * Claude's richer `{envelope, cwd, cwds, warnings}` shape is reduced to the
- * envelope by the spec (the cwd/warnings path is still available via the
- * underlying `streamSession` import for `src/pipeline.ts` until Task 10
- * migrates it to program against the spec).
+ * The Task-1 contract wrote `: NormalizedEnvelope` (sync); the original
+ * Task-7 widening reduced it to `Promise<NormalizedEnvelope>`. The current
+ * shape is `Promise<StreamResult>` — the full `{envelope, cwd, cwds, warnings}`
+ * value the streaming readers already produce — so the pipeline can program
+ * against `spec.streamSession` (Task 10) without a shape reduction and the
+ * cwd/cwds/warnings paths stay available through the spec (not only via the
+ * direct `streamSession` import).
  */
 export interface HarnessSpec {
   id: HarnessId;
   displayName: string;
   defaultRootDir(): string;
   layout: TranscriptLayout;
-  streamSession(filePath: string): Promise<NormalizedEnvelope>;
+  streamSession(filePath: string): Promise<StreamResult>;
   installHook(opts: { cwd: string }): InitResult;
   capabilities: CapabilityMatrix;
+}
+
+/**
+ * Per-session streaming warnings — the subset of {@link Warnings} a single
+ * `streamSession` call can compute. The remaining `Warnings` fields
+ * (`skipped_sessions`, `symlinks_rejected`, `unresolvable_cwd`) are
+ * pipeline-level aggregates computed by the caller across the whole scan,
+ * not by any one stream. Field names/types are pinned verbatim to what
+ * Claude's `src/adapter/stream.ts` emits.
+ */
+export type StreamWarnings = Pick<
+  Warnings,
+  'malformed_lines' | 'oversized_lines' | 'truncated_sessions'
+>;
+
+/**
+ * Return value of `HarnessSpec.streamSession`. Mirrors Claude's
+ * `src/adapter/stream.ts` streamSession shape verbatim — same field names and
+ * types — so the Claude implementation conforms by construction and Task 10
+ * can migrate the pipeline to `spec.streamSession` mechanically.
+ *
+ *  - `envelope`: the normalized session envelope (events, span, agent stamp).
+ *  - `cwd`: representative cwd = first distinct cwd seen (empty when none).
+ *  - `cwds`: all distinct cwds seen across records, in first-seen order. The
+ *    pipeline tries each for repo/worktree resolution so a session that
+ *    started in a live dir and later moved into a since-deleted worktree
+ *    still resolves.
+ *  - `warnings`: per-session counters (malformed/oversized lines, truncated).
+ */
+export interface StreamResult {
+  envelope: NormalizedEnvelope;
+  cwd: string;
+  cwds: string[];
+  warnings: StreamWarnings;
 }
 
 export interface NormalizedEnvelope {

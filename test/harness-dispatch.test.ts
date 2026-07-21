@@ -131,18 +131,29 @@ describe('resolveHarness + the three specs', () => {
     ];
     const filePath = writeJsonl(dir, `${sessionId}.jsonl`, lines);
 
-    const envelope = await GIGACODE_SPEC.streamSession(filePath);
+    // streamSession returns a StreamResult ({envelope, cwd, cwds, warnings});
+    // the agent-rewrite happens on the envelope inside that shape.
+    const result = await GIGACODE_SPEC.streamSession(filePath);
 
     // The agent-rewrite is the load-bearing assertion.
-    expect(envelope.agent).toBe('gigacode');
+    expect(result.envelope.agent).toBe('gigacode');
     // The rest of the envelope is the qwen parser's output unchanged.
-    expect(envelope.schema_version).toBe(1);
-    expect(envelope.session_id).toBe(sessionId);
-    expect(envelope.started_at).toBe(TS1);
-    expect(envelope.duration_ms).toBe(10_000); // TS2 - TS1
-    expect(envelope.events.map((e) => e.kind)).toEqual(['user_msg', 'assistant_msg']);
-    expect(envelope.event_count).toBe(2);
-    expect(envelope.truncated).toBe(false);
+    expect(result.envelope.schema_version).toBe(1);
+    expect(result.envelope.session_id).toBe(sessionId);
+    expect(result.envelope.started_at).toBe(TS1);
+    expect(result.envelope.duration_ms).toBe(10_000); // TS2 - TS1
+    expect(result.envelope.events.map((e) => e.kind)).toEqual([
+      'user_msg',
+      'assistant_msg',
+    ]);
+    expect(result.envelope.event_count).toBe(2);
+    expect(result.envelope.truncated).toBe(false);
+    // cwd/cwds/warnings pass through unchanged from streamQwenSession.
+    expect(result.cwd).toBe('/repo');
+    expect(result.cwds).toEqual(['/repo']);
+    expect(result.warnings.malformed_lines).toBe(0);
+    expect(result.warnings.oversized_lines).toBe(0);
+    expect(result.warnings.truncated_sessions).toBe(0);
   });
 
   it('4. resolveHarness throws on an unknown id (defensive at runtime boundary)', () => {
@@ -176,5 +187,34 @@ describe('resolveHarness + the three specs', () => {
     expect(symlinks_rejected).toBe(0);
     // The Claude-layout stray must NOT leak in.
     expect(files.some((f) => f.endsWith('stray.jsonl'))).toBe(false);
+  });
+
+  it('6. CLAUDE_SPEC.installHook maps InitClaudeResult → InitResult shape (3-tuple, harness, message)', () => {
+    // Closes the Minor gap flagged in review: the dispatcher's installHook
+    // mapping (InitClaudeResult paths → InitResult contract) was untested.
+    // Run init in a tmp cwd so the three artifacts are actually written and
+    // the mapping sees real paths.
+    const cwd = tmpDir();
+    const result = CLAUDE_SPEC.installHook({ cwd });
+
+    // harness stamped to claude-code (the verified branch).
+    expect(result.harness).toBe('claude-code');
+    // artifacts is the 3-tuple [wrapper, settings, command] — NOT a generic
+    // array of every written file. Each path is real on disk (init wrote it).
+    expect(result.artifacts).toHaveLength(3);
+    const [wrapper, settings, command] = result.artifacts;
+    expect(wrapper).toBeDefined();
+    expect(settings).toBeDefined();
+    expect(command).toBeDefined();
+    expect(fs.existsSync(wrapper!)).toBe(true);
+    expect(fs.existsSync(settings!)).toBe(true);
+    expect(fs.existsSync(command!)).toBe(true);
+    // No existing settings.json in the fresh tmp cwd → no backup, no degraded.
+    expect(result.settingsBackupPath).toBeUndefined();
+    expect(result.degraded).toBe(false);
+    // message is a non-empty single-line human-readable status.
+    expect(typeof result.message).toBe('string');
+    expect(result.message.length).toBeGreaterThan(0);
+    expect(result.message).not.toContain('\n');
   });
 });

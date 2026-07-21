@@ -23,12 +23,15 @@
 //     encounter order; calls with different `(toolName, argsKey)` consume from
 //     their own group.
 //
-//   - streamQwenSession(filePath): NormalizedEnvelope  — I/O: readline + size
+//   - streamQwenSession(filePath): StreamResult  — I/O: readline + size
 //     caps + envelope assembly. Reuses the SAME cap values as Claude's
-//     streamSession (1 MB line / 5000 events / 50 MB file). The emitted envelope
-//     is shape-indistinguishable from a Claude session's, so the detector
-//     remains harness-agnostic. `agent` is pinned to the literal `'qwen-code'`
-//     here; the Task-7 dispatcher stamps gigacode separately.
+//     streamSession (1 MB line / 5000 events / 50 MB file). The emitted
+//     envelope is shape-indistinguishable from a Claude session's, so the
+//     detector remains harness-agnostic. `agent` is pinned to the literal
+//     `'qwen-code'` here; the Task-7 dispatcher stamps gigacode separately.
+//     Returns the same `StreamResult` shape as Claude's `streamSession`
+//     ({envelope, cwd, cwds, warnings}) so the pipeline (Task 10) can program
+//     against `spec.streamSession` uniformly across harnesses.
 //
 // Privacy: scrubbing already happened in the parser (Task 4); the merge consumes
 // user_msg/assistant_msg text for correction detection only and does NOT emit
@@ -44,6 +47,7 @@ import type {
   InputDigest,
   NormalizedEnvelope,
   NormalizedEvent,
+  StreamResult,
   ToolKind,
 } from '../../types.js';
 import { detectCorrection } from '../correction.js';
@@ -223,7 +227,7 @@ function findDurationForCall(
 // --- streamQwenSession (I/O) ---
 
 /**
- * Stream one Qwen Code .jsonl transcript → NormalizedEnvelope. Reads line-by-line
+ * Stream one Qwen Code .jsonl transcript → StreamResult. Reads line-by-line
  * via node:readline (never slurps). Enforces the SAME cap values as Claude's
  * streamSession (1 MB line / 5000 events / 50 MB file). Fail-open: malformed
  * JSON lines are silently skipped; oversized lines are skipped+counted; never
@@ -235,13 +239,20 @@ function findDurationForCall(
  * a dropped oversized line has still lost data, which downstream signals must
  * be able to see. The detector already treats `truncated` as a confidence damp.
  *
- * `cwd` is extracted (first record carrying it, else the sibling
- * `<sessionId>.runtime.json` `work_dir`, else '') per the brief. The extracted
- * value is NOT surfaced on the envelope (NormalizedEnvelope has no cwd field);
- * the read is performed for contract fidelity and forward-looking use by the
- * Task-7 dispatcher.
+ * Returns the SAME `StreamResult` shape as Claude's `streamSession`
+ * ({envelope, cwd, cwds, warnings}) so the pipeline (Task 10) can program
+ * against `spec.streamSession` uniformly:
+ *  - `cwd` is the first record carrying it, else the sibling
+ *    `<sessionId>.runtime.json` `work_dir`, else ''.
+ *  - `cwds` is the distinct set of cwds seen across records (deduped,
+ *    first-seen order), mirroring Claude's collection. When only the
+ *    runtime.json fallback resolves a cwd, that value is the sole cwds entry.
+ *  - `warnings` carries the per-session counters Qwen already tracks
+ *    (`malformed_lines`, `oversized_lines`, `truncated_sessions`); the
+ *    remaining `Warnings` fields are pipeline-level aggregates the caller
+ *    computes across the whole scan, not per-file.
  */
-export async function streamQwenSession(filePath: string): Promise<NormalizedEnvelope> {
+export async function streamQwenSession(filePath: string): Promise<StreamResult> {
   const session_id = path.basename(filePath).replace(/\.[^.]+$/, '');
   const items: QwenParsedItem[] = [];
   let oversized_lines = 0;
@@ -249,6 +260,11 @@ export async function streamQwenSession(filePath: string): Promise<NormalizedEnv
   let truncated = false;
   let cumulativeBytes = 0;
   let cwd = '';
+  // Distinct cwds seen across records, in first-seen order — mirrors Claude's
+  // streamSession. The pipeline tries each for repo/worktree resolution so a
+  // session that started in a live dir and later moved into a since-deleted
+  // worktree still resolves.
+  const cwds: string[] = [];
   // Session span tracked across ALL parsed records (not just items that became
   // events), exactly mirroring Claude's streamSession. Used for envelope
   // started_at / duration_ms.
@@ -287,8 +303,16 @@ export async function streamQwenSession(filePath: string): Promise<NormalizedEnv
           if (parseOk) {
             if (parsed !== null && typeof parsed === 'object') {
               const rec = parsed as { cwd?: unknown; timestamp?: unknown };
+              // Collect EVERY distinct non-empty cwd across records (mirrors
+              // Claude's streamSession). The representative `cwd` (first one)
+              // preserves the old contract; the full `cwds` list lets the
+              // pipeline recover a repo when the representative points at a
+              // since-deleted worktree.
               const c = rec.cwd;
-              if (typeof c === 'string' && c.length > 0 && cwd === '') cwd = c;
+              if (typeof c === 'string' && c.length > 0) {
+                if (cwd === '') cwd = c;
+                if (!cwds.includes(c)) cwds.push(c);
+              }
               const ts = rec.timestamp;
               if (typeof ts === 'string') {
                 const ms = Date.parse(ts);
@@ -347,9 +371,10 @@ export async function streamQwenSession(filePath: string): Promise<NormalizedEnv
   if (oversized_lines > 0) truncated = true;
 
   // runtime.json work_dir fallback — only when no record carried cwd. The
-  // extracted value is not surfaced on the envelope (NormalizedEnvelope has no
-  // cwd field); this satisfies the contract for the Task-7 dispatcher, which
-  // will re-extract cwd when assembling its own context.
+  // resolved value is also pushed into `cwds` so cwd === cwds[0] invariant
+  // holds (the pipeline treats cwds.length === 0 as unresolvable; without this
+  // push, a session whose cwd was recovered only via runtime.json would be
+  // miscategorized as unresolved).
   if (cwd === '') {
     try {
       const runtimePath = path.join(
@@ -358,13 +383,14 @@ export async function streamQwenSession(filePath: string): Promise<NormalizedEnv
       );
       const content = readFileSync(runtimePath, 'utf8');
       const rt = JSON.parse(content) as { work_dir?: unknown };
-      if (typeof rt.work_dir === 'string') cwd = rt.work_dir;
+      if (typeof rt.work_dir === 'string') {
+        cwd = rt.work_dir;
+        cwds.push(cwd);
+      }
     } catch {
       // No runtime.json or malformed — leave cwd as ''.
     }
   }
-  void cwd; // not surfaced at this layer; consumed by the dispatcher (Task 7).
-  void malformed_lines; // counted for parity with Claude; not surfaced here.
 
   const started_at = firstRecordTs ?? '';
   const duration_ms =
@@ -387,5 +413,14 @@ export async function streamQwenSession(filePath: string): Promise<NormalizedEnv
     truncated,
     event_count: events.length,
   };
-  return envelope;
+  return {
+    envelope,
+    cwd,
+    cwds,
+    warnings: {
+      malformed_lines,
+      oversized_lines,
+      truncated_sessions: truncated ? 1 : 0,
+    },
+  };
 }

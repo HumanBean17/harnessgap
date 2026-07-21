@@ -8,15 +8,25 @@
 // logic explicitly permitted by the task brief:
 //
 //   (1) GIGACODE_SPEC.streamSession delegates to `streamQwenSession` then
-//       rewrites the returned envelope's `agent` from `'qwen-code'` (the
-//       qwen parser's stamp) to `'gigacode'`. Same parser, different agent
-//       stamp — GigaCode is a Qwen Code derivative and shares the transcript
-//       format byte-for-byte.
+//       rewrites the returned StreamResult's `envelope.agent` from
+//       `'qwen-code'` (the qwen parser's stamp) to `'gigacode'`. Same parser,
+//       different agent stamp — GigaCode is a Qwen Code derivative and shares
+//       the transcript format byte-for-byte. The rest of the StreamResult
+//       (cwd/cwds/warnings) passes through unchanged.
 //   (2) CLAUDE_SPEC.installHook delegates to `initClaude` and maps the
 //       Claude-specific `InitClaudeResult` (paths only) to the harness-agnostic
 //       `InitResult` contract (artifacts[], settingsBackupPath, degraded,
 //       message). Qwen + GigaCode's `initQwen`/`initGigacode` already return
 //       `InitResult` and attach unchanged.
+//
+// All three `streamSession` implementations return the SAME `StreamResult`
+// shape (`{envelope, cwd, cwds, warnings}`), so `HarnessSpec.streamSession`
+// could be widened from `Promise<NormalizedEnvelope>` to `Promise<StreamResult>`
+// without per-spec adapters. Claude's `streamSession` attaches DIRECTLY (it
+// already returns `StreamResult`); Qwen's attaches directly; GigaCode wraps
+// Qwen's for the agent rewrite. The cwd/cwds/warnings path is no longer
+// reduced at the spec boundary — the pipeline (Task 10) can program against
+// `spec.streamSession` mechanically.
 //
 // Capability matrices: the spec §5.2 table originally marked qwen/gigacode
 // `finalizationSignal` + `perPromptContextInjection` as `'pending'` pending
@@ -35,7 +45,7 @@ import type {
   HarnessId,
   HarnessSpec,
   InitResult,
-  NormalizedEnvelope,
+  StreamResult,
   TranscriptLayout,
 } from '../types.js';
 import { defaultRootDir, discoverTranscripts } from '../walk.js';
@@ -71,22 +81,13 @@ const ALL_SUPPORTED: CapabilityMatrix = {
   perPromptContextInjection: 'supported',
 };
 
-// --- CLAUDE_SPEC: two mapping wrappers (streamSession + installHook) ---
-
-/**
- * Spec-facing Claude streamSession. Wraps the existing `streamSession` (which
- * returns a richer `{envelope, cwd, cwds, warnings}` shape that
- * `src/pipeline.ts` consumes directly) and reduces it to the envelope, so
- * CLAUDE_SPEC.streamSession has the same `Promise<NormalizedEnvelope>` shape
- * as QWEN_SPEC / GIGACODE_SPEC. The cwd/warnings path is unchanged for direct
- * callers — only the spec field sees the reduced shape.
- */
-async function claudeStreamForSpec(
-  filePath: string,
-): Promise<NormalizedEnvelope> {
-  const { envelope } = await claudeStreamSession(filePath);
-  return envelope;
-}
+// --- CLAUDE_SPEC: one mapping wrapper (installHook) ---
+//
+// streamSession needs NO wrapper: Claude's `src/adapter/stream.ts` already
+// returns the full `StreamResult` shape, so it attaches to the spec directly.
+// `src/pipeline.ts` continues to import `streamSession` from `./stream.js`
+// for now (Task 10 owns the migration to `spec.streamSession`); both paths
+// see the same value.
 
 /**
  * Spec-facing Claude installHook. Delegates to `initClaude` and maps
@@ -113,16 +114,16 @@ function claudeInstallHook(opts: { cwd: string }): InitResult {
 /**
  * Spec-facing GigaCode streamSession. Delegates to `streamQwenSession` (GigaCode
  * shares Qwen Code's transcript format byte-for-byte) and rewrites the returned
- * envelope's `agent` from the parser's `'qwen-code'` stamp to `'gigacode'`.
- * Every other envelope field is passed through unchanged. This is the load-
- * bearing piece of GigaCode-specific logic in the dispatcher: same parser,
- * different agent stamp.
+ * `StreamResult.envelope.agent` from the parser's `'qwen-code'` stamp to
+ * `'gigacode'`. The rest of the StreamResult (cwd/cwds/warnings) is passed
+ * through unchanged. This is the load-bearing piece of GigaCode-specific
+ * logic in the dispatcher: same parser, different agent stamp.
  */
 async function gigacodeStreamForSpec(
   filePath: string,
-): Promise<NormalizedEnvelope> {
-  const envelope = await streamQwenSession(filePath);
-  return { ...envelope, agent: 'gigacode' };
+): Promise<StreamResult> {
+  const result = await streamQwenSession(filePath);
+  return { ...result, envelope: { ...result.envelope, agent: 'gigacode' } };
 }
 
 // --- The three specs ---
@@ -132,7 +133,7 @@ export const CLAUDE_SPEC: HarnessSpec = {
   displayName: 'Claude Code',
   defaultRootDir: () => defaultRootDir('claude-code'),
   layout: CLAUDE_LAYOUT,
-  streamSession: claudeStreamForSpec,
+  streamSession: claudeStreamSession,
   installHook: claudeInstallHook,
   capabilities: ALL_SUPPORTED,
 };

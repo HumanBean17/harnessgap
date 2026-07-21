@@ -285,7 +285,7 @@ describe('streamQwenSession — I/O', () => {
       }),
     ];
     const p = writeJsonl(dir, sessionId + '.jsonl', lines);
-    const envelope = await streamQwenSession(p);
+    const { envelope, cwd, cwds, warnings } = await streamQwenSession(p);
 
     expect(envelope.schema_version).toBe(1);
     expect(envelope.agent).toBe('qwen-code');
@@ -307,6 +307,15 @@ describe('streamQwenSession — I/O', () => {
     expect(tc.duration_ms).toBe(18); // from telemetry
     expect(tc.interrupted).toBe(false);
     expect(envelope.event_count).toBe(3);
+    // StreamResult: cwd is the first record carrying it (CWD); cwds contains
+    // every distinct cwd seen across records (here all four carry the same
+    // CWD, so the deduped list is the singleton).
+    expect(cwd).toBe(CWD);
+    expect(cwds).toEqual([CWD]);
+    // StreamResult.warnings: per-session counters, all zero on a clean file.
+    expect(warnings.malformed_lines).toBe(0);
+    expect(warnings.oversized_lines).toBe(0);
+    expect(warnings.truncated_sessions).toBe(0);
   });
 
   it('7. caps & malformed: >1 MB line skipped+counted → truncated:true; non-JSON line skipped (no throw)', async () => {
@@ -332,7 +341,7 @@ describe('streamQwenSession — I/O', () => {
     // Order: valid (parsed), big (oversized→truncated), malformed (skipped, no throw).
     const p = writeJsonl(dir, 'caps.jsonl', [valid, big, malformed]);
 
-    const envelope = await streamQwenSession(p);
+    const { envelope, cwd, cwds, warnings } = await streamQwenSession(p);
     // The valid line was parsed; the oversized line was NOT (it was skipped).
     expect(envelope.events.length).toBe(1);
     expect(envelope.events[0]!.kind).toBe('user_msg');
@@ -340,5 +349,15 @@ describe('streamQwenSession — I/O', () => {
     expect(envelope.truncated).toBe(true);
     expect(envelope.event_count).toBe(1);
     // No throw — the malformed line was silently skipped.
+    // StreamResult: cwd from the valid line (the only parsed record carrying
+    // one — the oversized + malformed lines did not contribute).
+    expect(cwd).toBe(CWD);
+    expect(cwds).toEqual([CWD]);
+    // StreamResult.warnings: the oversized line incremented oversized_lines;
+    // the malformed line incremented malformed_lines; truncated was flagged
+    // (oversized-line data loss) → truncated_sessions === 1.
+    expect(warnings.oversized_lines).toBe(1);
+    expect(warnings.malformed_lines).toBe(1);
+    expect(warnings.truncated_sessions).toBe(1);
   });
 });
