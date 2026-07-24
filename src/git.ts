@@ -1,5 +1,6 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
+import { execFileSync } from 'node:child_process';
 
 /**
  * Resolve the MAIN repo root for a path — and, when the cwd lived in a SIBLING
@@ -284,4 +285,52 @@ function isAncestorOrEqual(ancestor: string, target: string): boolean {
   if (!path.isAbsolute(ancestor) || !path.isAbsolute(target)) return false;
   const rel = path.relative(ancestor, target);
   return rel === '' || (!rel.startsWith('..') && !path.isAbsolute(rel));
+}
+
+/**
+ * Sandbox env for read-only git invocations. Suppresses system + global user
+ * config (`GIT_CONFIG_NOSYSTEM`, `GIT_CONFIG_GLOBAL`, `GIT_CONFIG_SYSTEM`),
+ * disables prompts (`GIT_TERMINAL_PROMPT=0`, `GIT_ASKPASS=''`) and index locks
+ * (`GIT_OPTIONAL_LOCKS=0`) so a git call against a repo reads only the repo's
+ * OWN objects/config. These vars only control system + global config files —
+ * the repo's `.git/config` is still read, which is what we want (objects live
+ * in the repo). `process.env` is spread first so `PATH` (needed to find git)
+ * and other essentials are preserved; the git-specific keys then override.
+ *
+ * `cat-file -e` triggers no hooks (hooks fire on events like commit/push, not
+ * on object reads), so this is a fully local, read-only, offline operation —
+ * consistent with §11 (stateless, no-network).
+ */
+function gitSandboxEnv(): NodeJS.ProcessEnv {
+  return {
+    ...process.env,
+    GIT_CONFIG_NOSYSTEM: '1',
+    GIT_CONFIG_GLOBAL: '/dev/null',
+    GIT_CONFIG_SYSTEM: '/dev/null',
+    GIT_TERMINAL_PROMPT: '0',
+    GIT_OPTIONAL_LOCKS: '0',
+    GIT_ASKPASS: '',
+  };
+}
+
+/**
+ * True iff `sha` resolves to a valid commit in the repo at `repoRoot`. Runs
+ * `git -C <repoRoot> cat-file -e <sha>^{commit}` under {@link gitSandboxEnv}:
+ * the `^{commit}` peeling rejects non-commit objects (blobs/trees/tags), so a
+ * raw blob sha returns false. Never throws — a missing repo, malformed sha,
+ * non-commit object, or any non-zero exit returns false. Consumed by the
+ * fact-check gate (`src/synthesizer/factcheck.ts`) to validate `source_files@sha`.
+ */
+export function isValidSha(repoRoot: string, sha: string): boolean {
+  if (!sha) return false;
+  try {
+    execFileSync(
+      'git',
+      ['-C', repoRoot, 'cat-file', '-e', `${sha}^{commit}`],
+      { stdio: 'ignore', env: gitSandboxEnv() },
+    );
+    return true;
+  } catch {
+    return false;
+  }
 }

@@ -3,7 +3,7 @@ import { mkdtempSync, mkdirSync, rmSync, writeFileSync, realpathSync } from 'nod
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { execFileSync } from 'node:child_process';
-import { resolveMainRepo, resolveRepo, walkToRepo } from '../src/git.js';
+import { resolveMainRepo, resolveRepo, walkToRepo, isValidSha } from '../src/git.js';
 import type { RepoResolution } from '../src/git.js';
 
 const tmpDirs: string[] = [];
@@ -179,5 +179,48 @@ describe('resolveMainRepo / resolveRepo / walkToRepo', () => {
     const cache = new Map<string, RepoResolution | null>();
     expect(resolveMainRepo(dir, cache)).toBeNull();
     expect(cache.get(dir)).toBeNull();
+  });
+});
+
+// isValidSha (Task 7 fact-check helper): sandboxed, read-only commit
+// verification. Runs `git cat-file -e <sha>^{commit}` with system/global config
+// suppressed so a malformed sha or a non-commit object returns false, never
+// throws. The fact-check gate (src/synthesizer/factcheck.ts) consumes this.
+describe('isValidSha', () => {
+  it('returns true for a real HEAD commit', () => {
+    const dir = makeTempDir('sha');
+    initRepoWithCommit(dir);
+    const head = execFileSync('git', ['-C', dir, 'rev-parse', 'HEAD'], {
+      encoding: 'utf8',
+    }).trim();
+    expect(isValidSha(dir, head)).toBe(true);
+  });
+
+  it('returns true for HEAD (ref resolves to a commit)', () => {
+    const dir = makeTempDir('sha-ref');
+    initRepoWithCommit(dir);
+    expect(isValidSha(dir, 'HEAD')).toBe(true);
+  });
+
+  it('returns false for a bogus sha', () => {
+    const dir = makeTempDir('sha-bogus');
+    initRepoWithCommit(dir);
+    expect(isValidSha(dir, 'deadbeefdeadbeefdeadbeefdeadbeefdeadbeef')).toBe(false);
+  });
+
+  it('returns false for an empty string', () => {
+    const dir = makeTempDir('sha-empty');
+    initRepoWithCommit(dir);
+    expect(isValidSha(dir, '')).toBe(false);
+  });
+
+  it('returns false (never throws) when repoRoot does not exist', () => {
+    expect(isValidSha('/nonexistent/repo/path', 'HEAD')).toBe(false);
+  });
+
+  it('returns false for a short/non-existent ref string', () => {
+    const dir = makeTempDir('sha-short');
+    initRepoWithCommit(dir);
+    expect(isValidSha(dir, 'not-a-real-ref')).toBe(false);
   });
 });
