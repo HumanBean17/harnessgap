@@ -1,9 +1,21 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, afterEach } from 'vitest';
 import { runDetector } from '../src/detector/index.js';
 import { computeSignals } from '../src/detector/signals.js';
 import { scoreSessions } from '../src/detector/scoring.js';
+import { runReflect } from '../src/pipeline.js';
 import { DEFAULT_CONFIG } from '../src/config.js';
-import type { NormalizedEnvelope, NormalizedEvent, ToolKind } from '../src/types.js';
+import {
+  setupTempRepo,
+  cleanupTempDirs,
+} from './helpers/builder.js';
+import type {
+  NormalizedEnvelope,
+  NormalizedEvent,
+  ReflectFinding,
+  ToolKind,
+} from '../src/types.js';
+
+afterEach(cleanupTempDirs);
 
 /** ms-since-epoch → ISO string; round-trips through Date.parse. */
 function iso(ms: number): string {
@@ -249,5 +261,73 @@ describe('runDetector + assembleStruggleRecord', () => {
     // forceBootstrap=true overrides even with 30 envelopes.
     const { records: forced } = runDetector(thirty, DEFAULT_CONFIG, true);
     expect(forced[0].mode).toBe('bootstrap');
+  });
+});
+
+// Task 4: docs_read / docs_injected collection. docs_read is the distinct
+// {path, t} of read-events (tool==='read') whose file lives under any
+// cfg.docs_dirs entry (default ['docs']), deduped by path keeping the EARLIEST
+// t; docs_injected is reserved for routing (deferred) and stays [] on every
+// record. The degenerate reflect fail-open record also yields both as [].
+describe('runDetector + assembleStruggleRecord — docs_read / docs_injected', () => {
+  it('6. docs_read collects distinct read-events under any docs_dirs entry; earliest t wins; src and edits excluded; docs_injected is []', () => {
+    // DEFAULT_CONFIG.docs_dirs === ['docs']. Two reads of the same doc path →
+    // deduped to one entry with the FIRST event's t; src/... is not under
+    // 'docs/' so excluded; an edit of a docs file is not a read → excluded.
+    const events: NormalizedEvent[] = [
+      toolCall(iso(0), 'read', { files: ['docs/architecture/billing.md'] }),
+      toolCall(iso(1000), 'read', { files: ['docs/architecture/billing.md'] }),
+      toolCall(iso(2000), 'read', { files: ['src/billing/charge.ts'] }),
+      toolCall(iso(3000), 'edit', { files: ['docs/notes.md'], lines_changed: 1 }),
+    ];
+    const { records } = runDetector([envelope('s1', events)], DEFAULT_CONFIG, false);
+    expect(records[0].docs_read).toEqual([
+      { path: 'docs/architecture/billing.md', t: iso(0) },
+    ]);
+    expect(records[0].docs_injected).toEqual([]);
+  });
+
+  it('7. docs_read dedupes by path keeping the earliest t across multiple docs (first-seen order preserved)', () => {
+    // Two distinct docs, the second one read at t=5000 then again at t=4000
+    // (out-of-order) → the earlier t (4000) must win. The first-seen order
+    // puts docs/a.md before docs/b.md.
+    const events: NormalizedEvent[] = [
+      toolCall(iso(0), 'read', { files: ['docs/a.md'] }),
+      toolCall(iso(5000), 'read', { files: ['docs/b.md'] }),
+      toolCall(iso(4000), 'read', { files: ['docs/b.md'] }),
+    ];
+    const { records } = runDetector([envelope('s2', events)], DEFAULT_CONFIG, false);
+    expect(records[0].docs_read).toEqual([
+      { path: 'docs/a.md', t: iso(0) },
+      { path: 'docs/b.md', t: iso(4000) },
+    ]);
+  });
+
+  it('8. no doc reads observed → docs_read: [], docs_injected: []', () => {
+    const events: NormalizedEvent[] = [
+      toolCall(iso(0), 'read', { files: ['src/billing/charge.ts'] }),
+      toolCall(iso(1000), 'edit', { files: ['src/billing/charge.ts'], lines_changed: 1 }),
+    ];
+    const { records } = runDetector([envelope('s3', events)], DEFAULT_CONFIG, false);
+    expect(records[0].docs_read).toEqual([]);
+    expect(records[0].docs_injected).toEqual([]);
+  });
+
+  it('9. degenerateRecord (reflect fail-open path: --latest with no matching session) yields docs_read: [], docs_injected: []', async () => {
+    // --latest with no matching session must fail open to a trip:false finding
+    // whose record is produced by degenerateRecord (no detection is run). The
+    // always-on docs_read / docs_injected fields must both be [] on that record.
+    const { repo, claudeDir } = setupTempRepo();
+    const result = await runReflect({
+      latest: true,
+      repo,
+      claudeDir,
+      format: 'json',
+    });
+    expect(result.exitCode).toBe(0);
+    const parsed = JSON.parse(result.output) as ReflectFinding;
+    expect(parsed.trip).toBe(false);
+    expect(parsed.record.docs_read).toEqual([]);
+    expect(parsed.record.docs_injected).toEqual([]);
   });
 });

@@ -16,7 +16,7 @@ import type {
 import { computeSignals } from './signals.js';
 import { scoreSessions } from './scoring.js';
 import { localizeAreas } from './areas.js';
-import { assembleStruggleRecord } from './record.js';
+import { assembleStruggleRecord, collectDocsRead } from './record.js';
 import { computePreEditOrientation } from './orientation.js';
 import { assessAmbient } from './ambient.js';
 import type { AmbientSession } from './ambient.js';
@@ -74,6 +74,12 @@ export function runDetector(
 
   const records = envelopes.map((env, i) => {
     const areas = localizeAreas(env.events, cfg);
+    // Closed-loop MVP: docs_read is always computed from the envelope's
+    // read-events (cheap, pure, no opt-in). docs_injected is reserved for
+    // routing (a later task); the detector emits [] for it on every record so
+    // the synthesizer/fact-check stages can rely on the field being present
+    // without a sentinel.
+    const docs_read = collectDocsRead(env.events, cfg.docs_dirs);
     // Evidence is computed and threaded through ONLY when explicitly opted in.
     // Default path (no opts / collectEvidence:false) skips the call entirely
     // so `StruggleRecord.evidence` is absent — keeps scan/reflect output
@@ -81,7 +87,7 @@ export function runDetector(
     const evidence = collectEvidence
       ? computeEvidence(env.events, cfg.areas.test_cmd_patterns)
       : undefined;
-    return assembleStruggleRecord(env, signals[i]!, scores[i]!, areas, evidence);
+    return assembleStruggleRecord(env, signals[i]!, scores[i]!, areas, docs_read, [], evidence);
   });
 
   return { records, finding, baseline };
