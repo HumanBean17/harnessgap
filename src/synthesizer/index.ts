@@ -24,11 +24,14 @@
 // sole egress is `runBackend` (src/synthesizer/backend.ts), which shells out to
 // the agent print-mode CLI. Tests inject `runBackendFn` to avoid a real call.
 // `child_process` is imported ONLY in backend.ts (the §11 egress guard allows
-// it there); this file imports node:fs, node:path, node:crypto only.
+// it there); this file imports node:fs, node:path, node:crypto, and yaml
+// (in-memory serializer for frontmatter — no fs/network/subprocess surface)
+// only.
 
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { createHash } from 'node:crypto';
+import { stringify as yamlStringify } from 'yaml';
 import { loadConfig } from '../config.js';
 import { collectEnvelopes } from '../pipeline.js';
 import { runDetector } from '../detector/index.js';
@@ -347,9 +350,20 @@ async function synthesizeOne(args: {
 
 /**
  * Write one new-doc proposal to `<proposalsDir>/<safeArea>-<cause>-<shortHash>.md`
- * with YAML frontmatter (derived_from / unit / struggle_score / cause /
- * source_files@sha / created / verification) and the synthesized body. Returns
- * the repo-relative path.
+ * with YAML frontmatter and the synthesized body. Returns the repo-relative
+ * path.
+ *
+ * The frontmatter is a PRESENTATION SUPERSET of the {@link Proposal} schema:
+ * it carries everything the Review stage (Task 12, `runReview`) parses back out
+ * — `path` (the accept move-target), `cause`, `confidence`, `evidence_refs`
+ * (the wrong-cause mitigation — reviewers sanity-check the diagnoser's
+ * rationale, not just the label), and `verification` — alongside the
+ * synthesizer-internal `derived_from` / `unit` / `struggle_score` /
+ * `source_files` / `created`. `confidence` and `evidence_refs` are threaded from
+ * the {@link Diagnosis} (they are diagnoser-derived, not synthesizer-invented);
+ * `path` and `verification` are top-level on the {@link Proposal}. The on-disk
+ * superset does NOT widen the backend-output `Proposal` type or
+ * {@link assertNewDocProposal} — those stay pinned to the closed-loop contract.
  */
 function writeProposal(args: {
   proposal: Proposal;
@@ -366,11 +380,32 @@ function writeProposal(args: {
   const abs = path.join(proposalsDir, filename);
 
   const fm: string[] = ['---'];
+  // `path` first — Review's accept moves the file here (validated to be under a
+  // docs_dir). Repo-relative POSIX; proposal.path is already that form.
+  fm.push(`path: ${proposal.path}`);
   fm.push('derived_from:');
   for (const s of proposal.frontmatter.derived_from) fm.push(`  - ${s}`);
   fm.push(`unit: ${args.diagnosis.unit.key}`);
   fm.push(`struggle_score: ${proposal.frontmatter.struggle_score}`);
   fm.push(`cause: ${cause}`);
+  // `confidence` + `evidence_refs` from the Diagnosis — the Review stage
+  // surfaces these so a human can sanity-check the diagnoser's rationale (the
+  // wrong-cause mitigation). Every evidence_refs leaf is derived-only/scrubbed
+  // (signal values, counts, doc paths) — never transcript prose or file bodies.
+  fm.push(`confidence: ${args.diagnosis.confidence}`);
+  fm.push('evidence_refs:');
+  if (args.diagnosis.evidence_refs.length > 0) {
+    // yamlStringify emits a block sequence (`- kind: ...`); indent each line by
+    // 2 spaces so it nests under `evidence_refs:`. Round-trips through the
+    // Review parser's `parse(fm)` (same yaml library).
+    const refsYaml = yamlStringify(args.diagnosis.evidence_refs);
+    for (const line of refsYaml.split('\n')) {
+      if (line === '') continue;
+      fm.push(`  ${line}`);
+    }
+  } else {
+    fm.push('  []');
+  }
   fm.push('source_files:');
   for (const s of proposal.frontmatter.source_files) fm.push(`  - ${s}`);
   fm.push(`created: ${proposal.frontmatter.created}`);
