@@ -422,10 +422,10 @@ stream errors are skipped and counted, never thrown (`src/adapter/stream.ts:127`
   (`test/config.test.ts`), git sandbox (`test/git.test.ts`), walk
   (`test/walk.test.ts`), stream/merge (`test/stream.test.ts`), output formatters
   (`test/output.test.ts`). All pure; TDD applies naturally.
-- **Corpus integration test** (`test/corpus.test.ts`) — 12 labeled fixtures run
+- **Corpus integration test** (`test/corpus.test.ts`) — 14 labeled fixtures run
   through the **real** pipeline (real filesystem, real git, real streaming,
   real detection — no mocking). Pass bar: `≥ 80%` of fixtures match their
-  `expected_flagged` label (`≥ 10` of 12). Also asserts each labeled session's
+  `expected_flagged` label (`≥ 12` of 14). Also asserts each labeled session's
   `expected_top_signals` are a subset of the flagged area's top signals. This
   is the regression proxy that would catch a signal-always-0 bug: a broken
   signal drops the match rate below the bar.
