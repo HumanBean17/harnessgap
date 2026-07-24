@@ -33,7 +33,7 @@ On a real repo with Claude Code history, the closed loop runs end-to-end and pro
 - `harnessgap synthesize` — opt-in command; composes detect → diagnose → synthesize; writes schema-checked proposals to `docs/_proposals/`.
 - `harnessgap review` — lists `docs/_proposals/`; accept / edit / reject; surfaces diagnosed cause + confidence + fact-check status.
 - `harnessgap explain <area>` — routing lite; prints diagnosed cause + a one-line pointer + the relevant doc body (or a proposal suggestion).
-- `docs_read: string[]` on `StruggleRecord` — always-on doc-read consumption signal (Measurement lite), collected in the detector.
+- `docs_read: string[]` + `docs_injected: string[]` on `StruggleRecord` — always-on doc-read consumption signal (Measurement lite); `docs_injected` reserved empty until routing lands. Collected in the detector.
 - `Proposal` contract (types) + `synthesizer` config block + per-harness backend defaults.
 - Multi-harness synthesis backends: `claude -p` / `qwen -p` / `gigacode -p`, each requesting JSON output.
 - Tests: extend the labeled fixture corpus; `Proposal` schema + fact-check unit tests; an e2e `synthesize → review` path on a fixture; updated snapshots for the new `docs_read` key.
@@ -180,7 +180,7 @@ Any failure → the proposal is **not** written as a doc; a "needs human" note r
 
 ## 7. Doc-read consumption (Measurement lite) — parent §4.7
 
-- Add `docs_read: string[]` to `StruggleRecord` (present in the parent §4.2 sketch, absent from the implemented type).
+- Add `docs_read: string[]` **and** `docs_injected: string[]` to `StruggleRecord` (both in the parent §4.2 sketch, absent from the implemented type). `docs_injected` is reserved empty (`[]`) until the Router lands — adding both now avoids a later Measurement migration.
 - Populated **always** (nearly free): the distinct `docs/**` paths a session read, collected in the detector from the same read-event stream it already walks, gated by `docs_dirs`.
 - Surfaced in `--json` output and the `--calibrate` view, so Measurement has data from day one. The heavy read-vs-not-read `stats` delta + confidence band is deferred.
 - Privacy: doc **paths** only, no bodies — consistent with the existing derived-only posture.
@@ -246,3 +246,44 @@ Per the repo's own rule (*"not a single follow-up should just be mentioned mid-c
 3. **Proposal path / category derivation** — how `docs/<category>/` is chosen when the proposal does not specify (default by `docs_dirs` category; confirm mapping).
 4. **Dedupe-lite approach** — TF-IDF similarity for the `dedupe` field vs backend-decided new/append/supersede with similarity left unset (`dedupe: 'none'`).
 5. **`gigacode` verification** — confirm `-p` + `-o json` parity once a build is installed.
+
+## 13. Forward-compatibility, status & what's next
+
+*For the next agent: this section is the self-contained state of the closed loop once this slice lands. The full vision is `docs/DESIGN.md` (§4.4–§4.7, §10). Tracking lives here — no separate issues — so read this to know what is done and what to pick up next.*
+
+### 13.1 Subset, not a fork
+
+Every contract in this spec is the DESIGN.md contract, minimally populated (`Proposal` = §4.4; `docs_read` / `docs_injected` = §4.2; `synthesizer` config = §6). Each deferred item below **extends a named slot** — nothing built here is thrown away.
+
+### 13.2 Delivered by this slice (DONE)
+
+- `synthesize` — prose-gated (`cause ∈ {doc, config-doc}`), fact-checked proposals → `docs/_proposals/`; multi-harness (`claude` / `qwen` / `gigacode -p`) requesting JSON output; `structure_only` heads-only; dedupe TF-IDF or none.
+- `review` — accept / edit / reject; surfaces cause + confidence + verification; accept → `docs/<category>/`; edit re-runs the fact-check.
+- `explain <area>` — routing lite (pointer + doc body / proposal suggestion).
+- `docs_read` + `docs_injected` on `StruggleRecord`, always-on.
+- `Proposal` type, `synthesizer` config block, per-harness backend map.
+- Tests: corpus extended; `Proposal` + fact-check units; e2e `synthesize → review`; snapshots updated for the new record fields.
+
+### 13.3 Deferred — what "full" adds and where to extend
+
+| Component | This slice (MVP-lite) | Full version (next) | DESIGN | How to extend (the seam is already there) |
+|---|---|---|---|---|
+| Synthesizer | TF-IDF/none dedupe; heads-only | embeddings dedupe; AST/path skeleton under `structure_only` | §4.4 | swap the dedupe impl behind the stable `dedupe` field; `structure_only` is already a flag |
+| Curator | accept-to-disk via `review` | `harnessgap pr` (gh); CLAUDE.md/AGENTS.md fallback-index block | §4.5 | new `pr` command; index block between the existing markers |
+| Router | `explain` pointer (manual) | live `PreToolUse` hook (pointer default, full-injection opt-in) | §4.6 | the hook calls the same pointer logic `explain` already renders |
+| Measurement | `docs_read` / `docs_injected` collected | read-vs-not-read `stats` delta + confidence band; team `.harnessgap/team/struggle.jsonl` | §4.7 | `stats` consumes `docs_read`; the team file aggregates already-scrubbed records |
+| Calibration | #34 Phase 0 eyeball + corpus | #34 Phase 1 (blind precision/recall) + Phase 3 (cause-vs-memory) | §7, #34 | see §11 — use the recall-substitute (fixtures + read-the-transcript labeling) |
+
+### 13.4 Forward-compat invariants (preserve these)
+
+- `docs_read` **and** `docs_injected` both on `StruggleRecord` (injected empty until routing) — no later migration.
+- Backend = a **per-harness adapter/table**, not inline `claude -p` — a 4th backend is a config entry.
+- Fact-check = **one swappable function** — AST-level checking is a drop-in.
+- `dedupe` field schema is stable — embeddings replace the TF-IDF/none impl behind it.
+
+### 13.5 Doc / identity updates required before the slice is "done"
+
+After merge these no longer match reality and must be updated (the `docs-watcher` session-end subagent handles doc drift, but make them exit-criteria, not afterthoughts):
+- `CLAUDE.md` + `package.json` description: *"detection-only, no writes, no network"* → the loop now writes and shells out (the **default** path stays pure; only opt-in commands cross the boundary).
+- README / `docs/CONSUMER_GUIDE.md` / `docs/ARCHITECTURE.md` privacy model: derived evidence + repo file-heads now leave the machine via the agent CLI subprocess (parent §8).
+- `src/egress.ts` / `test/egress.test.ts` still pass — verify and note (synthesis uses `child_process`, not a network import).
