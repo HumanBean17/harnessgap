@@ -71,7 +71,7 @@ Backend subprocess  (claude -p / qwen -p / gigacode -p, JSON output)
    ▼
 5b. shared Proposal schema-validator
    ▼
-factCheck(proposal, repoHead) → { failures[] }      (deterministic, against HEAD)
+factCheck(proposal, repoRoot, docsDirs) → { failures[] }      (deterministic, against HEAD)
    │   cited_symbols_resolved · referenced_paths_resolved · shas_valid
    │      fail  → write "needs human" note (NO doc written)
    │      pass  ▼
@@ -113,7 +113,7 @@ The repo's identity is *"default path: stateless, no-network, no-writes"* (CLAUD
 3. **Assemble the evidence bundle** (derived-only / scrubbed): the `Diagnosis` (cause, confidence, rationale, `evidence_refs`); the unit's `StruggleRecord` signals + area key; docs inventory (paths **and size-capped bodies**, sent regardless of `structure_only`); repo file-heads under the area prefix (size-capped, scrubbed via `src/adapter/scrub.ts`, governed by `structure_only`).
 4. **Backend subprocess (egress-safe):** shell out to the per-harness print-mode CLI, prompt on stdin, capture stdout (§9–§10). **Fail-open:** missing binary / non-zero exit / unparseable output → degrade to a digest entry + clean stderr, never crash.
 5. **5a. per-harness envelope-unwrap adapter** `extractProposal(stdout, harness): unknown` — Claude and Qwen wrap results in *different* JSON envelopes (§10); the unwrap is per-harness. **5b. shared Proposal schema-validator** — one validator over the unwrapped object.
-6. **Fact-check (deterministic, BEFORE write):** `factCheck(proposal, repoHead)` → `FactCheckResult` (§5.4). **Fail → do not write the doc**; write a "needs human" note listing the failed assertions.
+6. **Fact-check (deterministic, BEFORE write):** `factCheck(proposal, repoRoot, docsDirs)` → `FactCheckResult` (§5.4). **Fail → do not write the doc**; write a "needs human" note listing the failed assertions.
 7. **Write the new-doc proposal** to `docs/_proposals/`. If the (unexpected) `edit-proposal` variant comes back, write a "needs human" note instead — MVP does not apply edits.
 
 ### 5.3 Proposal contract (parent §4.4, **new-doc only**)
@@ -152,7 +152,7 @@ The repo's identity is *"default path: stateless, no-network, no-writes"* (CLAUD
 A single swappable function whose contract includes **both extraction-from-structured-fields and resolution**:
 
 ```ts
-factCheck(proposal: Proposal, repoHead: string): FactCheckResult
+factCheck(proposal: Proposal, repoRoot: string, docsDirs: string[]): FactCheckResult
 // where
 FactCheckResult = {
   failures: { assertion: string; kind: 'symbol' | 'path' | 'sha'; resolved: boolean; detail?: string }[]
@@ -278,7 +278,7 @@ Every contract here is the DESIGN.md contract, minimally populated (`Proposal` =
 
 - `docs_read`/`docs_injected` are **timing-bearing** (`{path,t}` / `{path,t,trigger}`) — do not collapse to `string[]`; Measurement needs the `t`.
 - Backend = **per-harness unwrap adapter + shared Proposal validator** — a new harness adds both a config row and an `extractProposal` case, not just a config entry.
-- Fact-check = the **`factCheck(proposal, repoHead) → {failures[]}` contract** — extraction (from `cited_symbols`/`referenced_paths`) **and** resolution are both part of it; an AST upgrade replaces both, with `verification` as the stable boolean projection.
+- Fact-check = the **`factCheck(proposal, repoRoot, docsDirs) → {failures[]}` contract** — extraction (from `cited_symbols`/`referenced_paths`) **and** resolution are both part of it; an AST upgrade replaces both, with `verification` as the stable boolean projection.
 - `dedupe` field schema is stable; `Proposal.path` is authoritative for review accept.
 - Pointer rendering is a **pure function** (`src/router/pointer.ts`) shared by `explain` and the future hook.
 
