@@ -103,6 +103,18 @@ export function scrubQuery(q: string): string {
 }
 
 /**
+ * Scrub multi-line repo file content (Synthesizer, Task 9). Applies the SAME
+ * 7-rule catalog as `scrubCmd`/`scrubQuery` but WITHOUT the 512-char truncation
+ * — the caller owns the size cap (e.g. `synthesizer.max_file_head_bytes`), so a
+ * 4 KiB source head keeps its full redacted length rather than being cut to 512.
+ * Used by `src/synthesizer/bundle.ts` to scrub source-file heads fed to the
+ * backend; the existing `scrubCmd`/`scrubQuery` paths are unchanged.
+ */
+export function scrubContent(s: string): string {
+  return scrubCatalog(s);
+}
+
+/**
  * Scrub a list of file paths: replace any path matching a credential-file glob
  * with the sentinel, leave others unchanged, then drop entries beyond 50 (no
  * marker). Only the credential-file rule applies here — not the full catalog.
