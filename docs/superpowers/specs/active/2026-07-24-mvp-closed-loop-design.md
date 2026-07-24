@@ -76,7 +76,7 @@ factCheck(proposal, repoRoot, docsDirs) → { failures[] }      (deterministic, 
    │      fail  → write "needs human" note (NO doc written)
    │      pass  ▼
 Write NEW-DOC proposal  →  docs/_proposals/<area>-<cause>-<short>.md
-   (path is authoritative; frontmatter: derived_from, unit, struggle_score, cause, source_files@sha, created, verification)
+   (path is authoritative; on-disk frontmatter is a presentation superset of the Proposal schema — `path`, `derived_from`, `unit`, `struggle_score`, `cause`, `confidence`, `evidence_refs`, `source_files@sha`, `created`, `verification`)
 
 harnessgap review        →  docs/_proposals/  →  accept → move to Proposal.path
 harnessgap explain <area> →  reads records + on-disk docs  (pointer [pure fn] + body + "N sessions consulted <doc>")
