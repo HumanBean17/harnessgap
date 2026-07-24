@@ -64,6 +64,13 @@ export function assembleStruggleRecord(
       event_count: envelope.event_count,
       areas,
       signals,
+      // Closed-loop MVP: always-on doc-read/doc-injection rollups. The
+      // detector does not yet populate these from real events (a later task
+      // extends this function's signature to accept them); empty arrays are
+      // the honest placeholder so the synthesizer/fact-check stages can rely
+      // on the fields being present without a sentinel.
+      docs_read: [],
+      docs_injected: [],
       evidence,
     };
   }
@@ -79,5 +86,8 @@ export function assembleStruggleRecord(
     event_count: envelope.event_count,
     areas,
     signals,
+    // Closed-loop MVP: always-on doc-read/doc-injection rollups (see above).
+    docs_read: [],
+    docs_injected: [],
   };
 }

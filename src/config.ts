@@ -83,6 +83,26 @@ export const DEFAULT_CONFIG: Config = {
     test_share_floor: 0.5,
     code_share_floor: 0.5,
     score_floor: 70,
+    // Closed-loop MVP: pinned to 0.6 by the plan (§5.2/§9) — below this
+    // confidence, doc/config-doc causes downgrade to a digest card with no
+    // prose. Validation (range check ∈ [0,1]) is added in a later task.
+    confidence_floor_for_prose: 0.6,
+  },
+  // Closed-loop MVP (Synthesizer) defaults, pinned verbatim by the plan.
+  // `backend`/`model` are null so the default path makes no external call
+  // (structure-only / no network); `dedupe:'none'` skips near-duplicate
+  // search; `top_n:3` caps the areas synthesized per run. Validation
+  // (dedupe ∈ {none,tfidf}, max_file_head_bytes >= 1, top_n >= 1, range
+  // checks) and the `KNOWN_TOP_KEYS` allowlist entry for `synthesizer` are
+  // added in a later task — the values themselves are fixed here so
+  // `DEFAULT_CONFIG` satisfies the widened `Config` type.
+  synthesizer: {
+    backend: null,
+    model: null,
+    structure_only: false,
+    max_file_head_bytes: 4096,
+    dedupe: 'none',
+    top_n: 3,
   },
 };
 

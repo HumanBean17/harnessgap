@@ -164,6 +164,9 @@ describe('docs_dirs and diagnose config (Slice 4 Task 1)', () => {
       test_share_floor: 0.5,
       code_share_floor: 0.5,
       score_floor: 70,
+      // Closed-loop MVP: prose-emission confidence floor (Task 1 types +
+      // default; validation lands in a later task).
+      confidence_floor_for_prose: 0.6,
     });
   });
 

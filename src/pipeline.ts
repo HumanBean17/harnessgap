@@ -727,6 +727,10 @@ function degenerateRecord(envelope: NormalizedEnvelope): StruggleRecord {
       oscillation: 0,
       wall_clock_per_line_ms: null,
     },
+    // Closed-loop MVP: always-on doc-read/doc-injection rollups. The
+    // degenerate fail-open record has no detection run, so both are empty.
+    docs_read: [],
+    docs_injected: [],
   };
 }
 
