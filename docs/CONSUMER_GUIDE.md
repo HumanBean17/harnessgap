@@ -91,8 +91,19 @@ harnessgap scan --since 30d
 # scan a different repo
 harnessgap scan --repo ~/projects/myapp
 
-# pipe the full envelope to jq
-harnessgap scan --json | jq '.areas[0:5'
+# pipe the full envelope to jq — top 5 struggle areas (AREA keys are never truncated)
+harnessgap scan --json | jq '.areas[0:5]'
+
+# which sessions flagged an area? the human table is area-level only; to verify
+# the sessions behind a flagged area (e.g. for the dogfood gate), drill into the
+# per-session records: started_at + session_id (the transcript filename stem) +
+# score + every area that session touched.
+harnessgap scan --repo ~/projects/myapp --json \
+  | jq '.sessions[] | select(.flagged) | {started_at, session_id, score_pct, areas: [.areas[].key]}'
+
+# narrow to one area's sessions (swap the path prefix for your flagged AREA key):
+harnessgap scan --repo ~/projects/myapp --json \
+  | jq '.sessions[] | select(.flagged and (.areas[].key | startswith("src/billing"))) | {started_at, session_id, score_pct}'
 
 # inspect signal distributions before trusting the leaderboard
 harnessgap scan --calibrate
@@ -187,7 +198,7 @@ warnings: 2 malformed lines, 1 symlinks rejected
 
 Columns:
 
-- **AREA** — the path-prefix cluster key (truncated with `...` if longer than the column).
+- **AREA** — the path-prefix cluster key, shown in full. The column widens to fit the longest flagged key (minimum width 32), so deep paths like `src/billing/payments/refunds` are never truncated.
 - **FLAGGED** — number of flagged sessions touching this area (an integer count; a session touches an area or it doesn't).
 - **MEAN SCORE** — mean `score_pct` over flagged sessions only.
 - **TOP SIGNALS** — up to 3 top contributing signals, formatted `name(value)`: counts as the raw count (`reread(7)`), `explore_ratio` as its repo percentile in percentile mode (`explore_ratio(95th)`) or raw in bootstrap mode, `wall_clock_per_line` as a duration (`540s`), `abandonment` as `yes`/`no`.

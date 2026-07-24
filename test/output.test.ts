@@ -234,6 +234,51 @@ describe('output formatters', () => {
     expect(out.includes(PROSE)).toBe(false);
   });
 
+  it('2b. formatHuman — AREA keys longer than the column are shown in full, never truncated (issue #34)', () => {
+    const longKey = 'src/billing/payments/refunds/handlers'; // 38 chars > AREA_MIN_W (32)
+    const areas: AreaRow[] = [
+      {
+        key: longKey,
+        sessions_total: 3,
+        sessions_flagged: 2,
+        mean_score: 85,
+        top_signals: [{ name: 'reread', value: 7, display: 'reread(7)' }],
+      },
+      {
+        // A short key alongside it: the column widens to the longest key, so
+        // this row is padded out but its key is still intact.
+        key: 'src/auth',
+        sessions_total: 2,
+        sessions_flagged: 1,
+        mean_score: 70,
+        top_signals: [{ name: 'abandonment', value: true, display: 'abandonment(yes)' }],
+      },
+    ];
+
+    const out = formatHuman({
+      repo: 'myrepo',
+      mode: 'bootstrap',
+      sessionCount: 5,
+      areas,
+      summary: { flagged: 2, unflagged: 0, unlocalized: 0 },
+      warnings: {
+        malformed_lines: 0,
+        oversized_lines: 0,
+        skipped_sessions: 0,
+        truncated_sessions: 0,
+        symlinks_rejected: 0,
+        unresolvable_cwd: 0,
+      },
+      baseline: mkBaseline(),
+      finding: null,
+    });
+
+    // The full long key is present verbatim — no `...` truncation.
+    expect(out).toContain(longKey);
+    // No ellipsis anywhere in the table (the only historical source was AREA truncation).
+    expect(out.includes('...')).toBe(false);
+  });
+
   it('3. formatHuman — zero areas prints a clear "no flagged areas" line, exit-friendly', () => {
     const out = formatHuman({
       repo: 'myrepo',
