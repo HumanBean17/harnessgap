@@ -1,6 +1,7 @@
-// Corpus fixture definitions: 12 synthetic-but-realistic Claude Code sessions
-// covering all 6 required categories. Each SessionSpec is a compact event-list
-// that mkSession (test/helpers/builder.ts) converts to valid JSONL at test time.
+// Corpus fixture definitions: 14 synthetic-but-realistic Claude Code sessions
+// covering all 6 required categories plus two Task-15 loop-relevant fixtures.
+// Each SessionSpec is a compact event-list that mkSession
+// (test/helpers/builder.ts) converts to valid JSONL at test time.
 //
 // Categories covered:
 //   1. clean-quick (×3: clean-quick, clean-build, clean-quick-2) — NOT flagged
@@ -12,6 +13,14 @@
 //   6. tdd-red-green — NOT flagged (oscillation must be 0)
 //
 // Plus: reread-heavy, corrections-heavy, slow-wall-clock (extra signal coverage).
+//
+// Task 15 (loop-relevant shapes, #34 recall-substitute seed):
+//   13. doc-gap-reread — flagged [reread, explore_ratio]; localizes to
+//       src/billing/invoice. Heavy re-reads of an undoc'd code area + a docs/
+//       lookup that finds no area-specific help. Exercises the closed-loop
+//       doc-read rollup (docs_read is populated by the docs/billing.md read).
+//   14. doc-informed-clean — NOT flagged. Doc-informed short edit + passing
+//       test (the positive counterpart: docs exist and help, clean edit).
 //
 // oscillation and failure_streak signals now compute correctly through the real
 // pipeline (the adapter merges tool_use + tool_result into one tool_call event
@@ -30,6 +39,13 @@ export interface Label {
   file: string;
   expected_flagged: boolean;
   expected_top_signals: string[];
+  /**
+   * Optional: the area key the session's primary (first) area must equal.
+   * Used by the Task-15 localization assertion to confirm a flagged struggle
+   * localizes to its intended area. Absent on labels that don't pin an area
+   * (e.g. clean/not-flagged sessions, or older fixtures).
+   */
+  expected_area?: string;
 }
 
 export const corpusSessions: SessionSpec[] = [
@@ -218,6 +234,53 @@ export const corpusSessions: SessionSpec[] = [
       },
     ],
   },
+
+  // 13. doc-gap-reread — flagged [reread, explore_ratio]; localizes to
+  // src/billing/invoice. Loop-relevant (#34 seed): the agent looks for docs
+  // (reads docs/billing.md — populates docs_read), finds no area-specific help,
+  // then heavily re-reads the undocumented code area before a tiny edit.
+  // 5 code files × 5 reads = 25 reads + 1 doc read = 26 reads; 1 edit (2 lines).
+  // reread=5 (5 files each read ≥5 times → trip), explore_ratio=26/2=13 (trip).
+  // Two signals trip → flagged. Area touch-weight concentrates (0.96) on
+  // src/billing/invoice (depth 3, ≥ min_weight 0.4) → primary area.
+  {
+    name: 'doc-gap-reread',
+    events: [
+      { kind: 'user_text', text: 'fix the invoice tax calc; check docs first' },
+      { kind: 'read', file: 'docs/billing.md' },
+      ...readsMulti(
+        [
+          'src/billing/invoice/calc.ts',
+          'src/billing/invoice/format.ts',
+          'src/billing/invoice/validate.ts',
+          'src/billing/invoice/retry.ts',
+          'src/billing/invoice/currency.ts',
+        ],
+        5,
+      ),
+      { kind: 'edit', file: 'src/billing/invoice/calc.ts', newString: 'x\ny' },
+    ],
+  },
+
+  // 14. doc-informed-clean — NOT flagged. Loop-relevant (#34 seed): the
+  // positive counterpart to doc-gap-reread. Doc-informed short edit + passing
+  // test (docs exist and help, so the agent proceeds cleanly). 1 doc read +
+  // 1 code read + 1 edit (10 lines) + 1 passing exec.
+  // explore_ratio=2/10=0.2 (no trip); all other signals 0/false → not flagged.
+  {
+    name: 'doc-informed-clean',
+    events: [
+      { kind: 'user_text', text: 'add a currency helper per docs/billing.md' },
+      { kind: 'read', file: 'docs/billing.md' },
+      { kind: 'read', file: 'src/checkout/total.ts' },
+      {
+        kind: 'edit',
+        file: 'src/checkout/total.ts',
+        newString: 'a\nb\nc\nd\ne\nf\ng\nh\ni\nj',
+      },
+      { kind: 'exec', cmd: 'npm test', ok: true },
+    ],
+  },
 ];
 
 export const corpusLabels: Label[] = [
@@ -233,4 +296,10 @@ export const corpusLabels: Label[] = [
   { file: 'corrections-heavy', expected_flagged: true, expected_top_signals: ['corrections', 'wall_clock_per_line'] },
   { file: 'slow-wall-clock', expected_flagged: true, expected_top_signals: ['explore_ratio', 'wall_clock_per_line'] },
   { file: 'clean-quick-2', expected_flagged: false, expected_top_signals: [] },
+  // Task 15: loop-relevant fixtures (recall-substitute seed for #34).
+  // doc-gap-reread: heavy re-reads of an undoc'd code area + a docs/ lookup
+  // that finds no area-specific help → flagged, localizes to src/billing/invoice.
+  { file: 'doc-gap-reread', expected_flagged: true, expected_top_signals: ['reread', 'explore_ratio'], expected_area: 'src/billing/invoice' },
+  // doc-informed-clean: doc-informed short edit + passing test → NOT flagged.
+  { file: 'doc-informed-clean', expected_flagged: false, expected_top_signals: [] },
 ];

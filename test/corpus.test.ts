@@ -1,14 +1,17 @@
 // Corpus regression test: runs runScan over the labeled fixture corpus and
 // asserts each session's `flagged` matches its label. Also checks that
-// expected_top_signals are a subset of the flagged area's actual top_signals.
+// expected_top_signals are a subset of the flagged area's actual top_signals,
+// and that any `expected_area` matches the session's primary localized area.
 //
-// Pass bar: ≥80% of fixtures must match expected_flagged (≥10 of 12). This bar
+// Pass bar: ≥80% of fixtures must match expected_flagged (≥12 of 14). This bar
 // gives latitude for v1-raw signal ranking while catching regressions. Failures
 // are listed by file with expected vs actual.
 //
-// The corpus doubles as the seed for later percentile bootstrapping. All 12
-// sessions run through the REAL pipeline (real filesystem, real git, real
-// streaming, real detection) — no mocking.
+// The corpus doubles as the seed for later percentile bootstrapping AND the
+// #34 recall-substitute seed (the two loop-relevant fixtures added in Task 15
+// — `doc-gap-reread` struggle and `doc-informed-clean` clean — cover the
+// closed-loop doc-gap shapes). All 14 sessions run through the REAL pipeline
+// (real filesystem, real git, real streaming, real detection) — no mocking.
 
 import { describe, it, expect, afterEach } from 'vitest';
 import { runScan } from '../src/pipeline.js';
@@ -34,13 +37,13 @@ async function scanCorpus(): Promise<JsonOutput> {
 }
 
 describe('corpus regression (labeled fixture corpus)', () => {
-  it('all 12 sessions scanned (sessionCount === 12, mode === bootstrap)', async () => {
+  it('all 14 sessions scanned (sessionCount === 14, mode === bootstrap)', async () => {
     const parsed = await scanCorpus();
-    expect(parsed.session_count).toBe(12);
+    expect(parsed.session_count).toBe(14);
     expect(parsed.mode).toBe('bootstrap');
   });
 
-  it('≥80% of fixtures match expected_flagged (pass bar: ≥10 of 12)', async () => {
+  it('≥80% of fixtures match expected_flagged (pass bar: ≥12 of 14)', async () => {
     const parsed = await scanCorpus();
 
     // Build a lookup: session_id (filename stem) → StruggleRecord.
@@ -109,6 +112,25 @@ describe('corpus regression (labeled fixture corpus)', () => {
           `session ${label.file}: expected top_signal "${expected}" not in area ${areaKey} top_signals (got: ${[...actualNames].join(', ')})`,
         ).toBe(true);
       }
+    }
+  });
+
+  it('flagged sessions with expected_area localize to that area', async () => {
+    const parsed = await scanCorpus();
+    const byId = new Map(parsed.sessions.map((s) => [s.session_id, s]));
+
+    for (const label of corpusLabels) {
+      if (label.expected_area === undefined) continue;
+      const rec = byId.get(label.file);
+      expect(rec, `session ${label.file} not found`).toBeDefined();
+      if (!rec) continue;
+
+      // The session's primary (first) area must equal the intended area key.
+      const primary = rec.areas[0]?.key;
+      expect(
+        primary,
+        `session ${label.file}: expected primary area "${label.expected_area}", got "${primary ?? '<none>'}"`,
+      ).toBe(label.expected_area);
     }
   });
 });

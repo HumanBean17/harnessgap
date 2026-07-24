@@ -10,5 +10,7 @@
   { "file": "tdd-red-green", "expected_flagged": false, "expected_top_signals": [] },
   { "file": "corrections-heavy", "expected_flagged": true, "expected_top_signals": ["corrections", "wall_clock_per_line"] },
   { "file": "slow-wall-clock", "expected_flagged": true, "expected_top_signals": ["explore_ratio", "wall_clock_per_line"] },
-  { "file": "clean-quick-2", "expected_flagged": false, "expected_top_signals": [] }
+  { "file": "clean-quick-2", "expected_flagged": false, "expected_top_signals": [] },
+  { "file": "doc-gap-reread", "expected_flagged": true, "expected_top_signals": ["reread", "explore_ratio"], "expected_area": "src/billing/invoice" },
+  { "file": "doc-informed-clean", "expected_flagged": false, "expected_top_signals": [] }
 ]
