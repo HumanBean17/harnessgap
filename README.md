@@ -90,12 +90,14 @@ detector + bootstrap mode.
 ### `init claude` / `init qwen` / `init gigacode`
 
 ```
-harnessgap init claude    # default; installs under <cwd>/.claude/
+harnessgap init claude    # installs under <cwd>/.claude/
 harnessgap init qwen      # installs under <cwd>/.qwen/
 harnessgap init gigacode  # installs under <cwd>/.gigacode/
 ```
 
-Installs three artifacts under the chosen harness dir (idempotent — re-run to refresh):
+The `<agent>` argument is required (no default — each agent lands under a
+different harness dir). Installs three artifacts under the chosen harness dir
+(idempotent — re-run to refresh):
 
 - a **fail-open Stop-hook wrapper** — on every stop it runs
   `harnessgap reflect --transcript <just-finished> --format hook-stop`; any fault
