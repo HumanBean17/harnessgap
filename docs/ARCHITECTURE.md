@@ -41,7 +41,7 @@ only adds persistence.
 | `src/git.ts` | Stat-based MAIN-repo resolver. Walks up from a cwd to the nearest directory `.git` (the main repo; worktrees only hold a `.git` file); also recovers SIBLING worktrees by scanning candidate siblings' `.git/worktrees/<name>/gitdir` registrations, returning the recovered checkout root alongside the repo. No git invocation, no shell. Memoized by cwd. | `resolveRepo`, `RepoResolution`, `resolveMainRepo`, `walkToRepo` |
 | `src/walk.ts` | Discover `.jsonl` transcripts under a harness root. Takes a `TranscriptLayout` (`projectsSegment` + optional `sessionSubdir` + `extension`) so the same code handles Claude's flat `<root>/projects/<slug>/*.jsonl` and Qwen/GigaCode's `<root>/projects/<slug>/chats/*.jsonl`. Rejects symlinks. `defaultClaudeDir` is a deprecated alias for `defaultRootDir('claude-code')`. | `discoverTranscripts`, `defaultRootDir`, `defaultClaudeDir` |
 | `src/relativize.ts` | Pure file-path relativization: strip the repo-root prefix, then collapse worktree checkout prefixes — `.<hidden>/worktrees/<name>/` (Claude Code's `.claude/worktrees/…`) OR `.worktrees/<name>/` (a hidden checkout dir named `worktrees` itself) — so the same file across the main checkout and nested worktrees aggregates into one area; also strips a sibling-worktree checkout root (`worktreeCheckoutRoot`, passed by the resolver) so sibling-worktree files collapse onto the same repo-relative areas as the main checkout. | `relativizeFilePath`, `stripWorktreePrefix`, `relativizeEnvelopeFiles` |
-| `src/pipeline.ts` | Thin I/O shell: orchestrates walk → stream → resolve-main-repo → relativize → detect → aggregate → output. Also hosts `runReflect`, the n=1 session-end analog (see §10). | `runScan`, `ScanOptions`, `ScanResult`, `runReflect`, `ReflectOptions`, `ReflectResult` |
+| `src/pipeline.ts` | Thin I/O shell: orchestrates walk → stream → resolve-main-repo → relativize → detect → aggregate → output. Also hosts `runReflect`, the n=1 session-end analog (see §10). | `runScan`, `ScanOptions`, `ScanResult`, `collectEnvelopes`, `CollectEnvelopesOptions`, `CollectedEnvelopes`, `runReflect`, `ReflectOptions`, `ReflectResult` |
 | `src/cli.ts` | commander bin entry. Parses args, awaits `runScan`/`runReflect`, routes `init <agent>` through `resolveHarness(id).installHook`. `scan`/`reflect` accept `--harness`/`--harness-dir` (with `--claude-dir` as a deprecated alias that conflicts with non-claude `--harness`). Writes stdout, exits. | `program` (`scan` default, `reflect`, `init` commands) |
 | `src/egress.ts` | §11 no-network guard: regexes for forbidden imports + `fetch()` calls. Single source of truth shared by the egress audit. | `FORBIDDEN_IMPORT`, `FORBIDDEN_FETCH_CALL`, `hasForbiddenImport`, `hasFetchCall`, `hasForbiddenEgress` |
 | `src/adapter/scrub.ts` | Pattern-catalog secret scrubber (7 rules). No entropy heuristic. | `scrubCmd`, `scrubQuery`, `scrubFiles` |
@@ -76,10 +76,15 @@ only adds persistence.
 
 ## 3. Pipeline
 
-`runScan` (`src/pipeline.ts:66`) threads the stages together. Async because
-`streamSession` is async.
+`runScan` (`src/pipeline.ts:323`) threads the stages together. Async because
+`streamSession` is async. The I/O preamble (steps 2–6 below: walk → stream →
+resolve-main-repo → relativize → `--repo`/`--since`/`--limit` filter + the scoped
+`unresolvable_cwd` warning) now lives in `collectEnvelopes` (`src/pipeline.ts`),
+which returns `{ envelopes, warnings, filterRepo }`; `runScan` — and the upcoming
+synthesize/explain entry points — call it before detect → aggregate → diagnose →
+output.
 
-1. **Config** — `loadConfig(opts.configPath)` (`src/pipeline.ts:68`). `ConfigError`
+1. **Config** — `loadConfig(opts.configPath)` (`src/pipeline.ts:327`). `ConfigError`
    propagates to the CLI (non-zero exit); `runScan` never catches it.
 2. **Walk** — `resolveHarness(harnessId)` (`src/pipeline.ts`) runs once at the
    top of `runScan`: `harnessId = opts.harness ?? cfg.harness ?? 'claude-code'`
