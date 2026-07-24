@@ -318,13 +318,14 @@ bootstrap mode as `scan`. No new config keys, no new dependencies.
 ### Install the hook
 
 ```
-harnessgap init claude     # default; installs under <cwd>/.claude/
+harnessgap init claude     # installs under <cwd>/.claude/
 harnessgap init qwen       # installs under <cwd>/.qwen/
 harnessgap init gigacode   # installs under <cwd>/.gigacode/
 ```
 
-All three install the same three artifacts under the chosen harness dir
-(idempotent — safe to re-run):
+The `<agent>` argument is required (no default — each agent lands under a
+different harness dir). All three install the same three artifacts under the
+chosen harness dir (idempotent — safe to re-run):
 
 - **fail-open Stop-hook wrapper** (`harnessgap-stop-hook.js`) — on every stop it
   runs `harnessgap reflect --transcript <just-finished> --format hook-stop`. Any
