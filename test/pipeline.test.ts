@@ -4,7 +4,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, rmSync, realpathSync } from 'nod
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { execFileSync } from 'node:child_process';
-import { runScan } from '../src/pipeline.js';
+import { runScan, collectEnvelopes } from '../src/pipeline.js';
 import { runDetector } from '../src/detector/index.js';
 import { DEFAULT_CONFIG } from '../src/config.js';
 import {
@@ -387,6 +387,70 @@ describe('runScan (pipeline orchestration)', () => {
     for (const s of offJson.sessions) {
       expect(s.evidence).toBeUndefined();
     }
+  });
+});
+
+// collectEnvelopes (Task 3 extraction) — the shared I/O preamble split out of
+// runScan so synthesize/explain (Tasks 10/11) can obtain NormalizedEnvelope[] +
+// records + warnings without runScan's output formatting. Contract:
+//   - walks the harness root, streams every transcript, resolves each session's
+//     main repo, relativizes file paths, and applies --repo / --since / --limit
+//     filtering;
+//   - computes the scoped `unresolvable_cwd` warning (issue #31) and returns
+//     the resolved output repo as `filterRepo`;
+//   - re-throws the bogus-`--repo` ConfigError (issue #29) — no machine-wide
+//     fallthrough.
+// These tests pin the contract at the helper boundary; byte-identical runScan
+// output is guarded separately by test/snapshot.test.ts +
+// test/pipeline-harness.test.ts (which must keep passing unchanged).
+
+describe('collectEnvelopes (Task 3 extraction)', () => {
+  it('1. returns envelopes + filterRepo + warnings for a 2-session fixture', async () => {
+    const { repo, claudeDir } = setupFixture();
+    const result = await collectEnvelopes({
+      harness: 'claude-code',
+      claudeDir,
+      repo,
+    });
+
+    // 2 well-formed sessions discovered, both under `repo` → both survive.
+    expect(result.envelopes).toHaveLength(2);
+    // filterRepo is the resolved main repo root (the fixture's git root, which
+    // is already a top-level repo so resolveMainRepo returns it unchanged).
+    expect(result.filterRepo).toBe(repo);
+    // Warnings object is populated with every key; no unresolvable cwds here.
+    expect(result.warnings.unresolvable_cwd).toBe(0);
+    expect(result.warnings.malformed_lines).toBe(0);
+    expect(result.warnings.symlinks_rejected).toBe(0);
+    // Each envelope is stamped with the resolved repo + repo-relative areas.
+    for (const env of result.envelopes) {
+      expect(env.repo).toBe(repo);
+    }
+  });
+
+  it('2. applies --limit AFTER filtering (caps envelopes, keeps filterRepo)', async () => {
+    const { repo, claudeDir } = setupFixture();
+    const result = await collectEnvelopes({
+      harness: 'claude-code',
+      claudeDir,
+      repo,
+      limit: 1,
+    });
+
+    expect(result.envelopes).toHaveLength(1);
+    // --limit affects only the count, not the resolved repo.
+    expect(result.filterRepo).toBe(repo);
+  });
+
+  it('3. bogus --repo → throws ConfigError, no machine-wide fallthrough (#29)', async () => {
+    const { claudeDir } = setupFixture();
+    await expect(
+      collectEnvelopes({
+        harness: 'claude-code',
+        claudeDir,
+        repo: '/nonexistent/harnessgap/bogus-' + Date.now(),
+      }),
+    ).rejects.toThrow(/does not resolve to a git repository/);
   });
 });
 
