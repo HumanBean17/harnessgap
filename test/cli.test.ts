@@ -247,6 +247,20 @@ describe('harnessgap CLI (spawn-based)', () => {
     expect(stdout).toContain('scan');
   });
 
+  it('6b. --help description reflects closed-loop reality (not stale "Stateless detection-only")', async () => {
+    // The CLI now ships `synthesize` (writes + shells out), so the old
+    // "Stateless detection-only" framing was false. The corrected description
+    // scopes statelessness to scan/reflect and names the closed-loop commands.
+    const { stdout, code } = await runCli(['--help']);
+
+    expect(code).toBe(0);
+    expect(stdout).toContain('Detect harness gaps in agent transcripts');
+    expect(stdout).toMatch(/scan\/reflect/);
+    expect(stdout).toMatch(/synthesize\/review/);
+    // The stale framing must not reappear.
+    expect(stdout).not.toContain('Stateless detection-only');
+  });
+
   // Slice 4 (Diagnoser) — Task 10 + Task 11: --diagnose flag is parsed and
   // threaded into runScan, and the JSON envelope carries a `diagnoses` array
   // (Task 11 wired JsonOutput.diagnoses into buildJsonEnvelope). Here we assert

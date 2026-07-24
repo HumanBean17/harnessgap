@@ -226,12 +226,16 @@ export function acceptProposal(args: {
   }
   try {
     fs.mkdirSync(path.dirname(targetAbs), { recursive: true });
-    // rename overwrites on POSIX; explicit unlink first keeps the semantics
-    // identical on hosts where rename-onto-existing is rejected.
-    try {
-      fs.rmSync(targetAbs, { force: true });
-    } catch {
-      // best-effort — rename below is the load-bearing step
+    // Refuse to overwrite an existing doc at the target path. accept must never
+    // silently destroy a file the reviewer did not opt into removing — the
+    // previous `rmSync({force:true})` clobbered an existing doc without notice.
+    // Leave BOTH the proposal (in docs/_proposals/) and the existing target
+    // untouched so the reviewer can resolve the collision deliberately.
+    if (fs.existsSync(targetAbs)) {
+      return {
+        ok: false,
+        message: `refused — target \`${relTarget}\` already exists — refusing to overwrite (remove it first)`,
+      };
     }
     fs.renameSync(proposal.absPath, targetAbs);
     return {

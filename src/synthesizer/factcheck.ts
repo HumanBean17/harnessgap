@@ -125,6 +125,16 @@ export function factCheck(
       const filePath = atIdx >= 0 ? entry.slice(0, atIdx) : entry;
       if (filePath === '') continue;
       const abs = path.resolve(repoRoot, filePath);
+      // path-confine: source_files originate from the backend's model output
+      // (semi-untrusted), so a `../../../etc/passwd@<sha>` entry must NOT read
+      // outside the repo. Mirror the referenced_paths guard: compute the
+      // repo-relative path and reject `..`/absolute escapes with a `kind:path`
+      // failure (assertion = the file path, detail = escapes repo root).
+      const relCheck = path.relative(repoRoot, abs);
+      if (relCheck.startsWith('..') || path.isAbsolute(relCheck)) {
+        fail(filePath, 'path', 'source_file escapes repo root');
+        continue;
+      }
       try {
         parts.push(fs.readFileSync(abs, 'utf8'));
       } catch {

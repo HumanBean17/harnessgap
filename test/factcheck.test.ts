@@ -16,7 +16,7 @@
 import { describe, it, expect, afterEach } from 'vitest';
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, relative } from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { factCheck, verificationFrom } from '../src/synthesizer/factcheck.js';
 import type { Proposal, FactCheckFailure } from '../src/types.js';
@@ -283,6 +283,39 @@ describe('factCheck — paths (kind: path)', () => {
     const pathFailures = result.failures.filter((f) => f.kind === 'path');
     expect(pathFailures).toHaveLength(1);
     expect(pathFailures[0].assertion).toBe(p.path);
+  });
+});
+
+describe('factCheck — source_files confinement (kind: path)', () => {
+  it('records a path failure and does NOT read outside the repo for an escaping source_files entry', () => {
+    const { repo, headSha } = makeFixtureRepo();
+    // Canary file OUTSIDE repoRoot carrying a unique sentinel symbol. If the
+    // escape were read, the sentinel would resolve as a cited symbol; the
+    // confinement guard must skip the read and record a path failure instead.
+    const canaryDir = makeTempDir('escape');
+    const canaryPath = join(canaryDir, 'secret.md');
+    writeFileSync(canaryPath, 'CANARY_OUTSIDE_REPO_SYMBOL\n', 'utf8');
+    const escapeRel = relative(repo, canaryPath); // begins with `..`
+    const p = validProposal({ headSha, sourcePath: 'src/billing/charge.ts' });
+    p.frontmatter.source_files = [`${escapeRel}@${headSha}`];
+    p.cited_symbols = ['CANARY_OUTSIDE_REPO_SYMBOL'];
+
+    const result = factCheck(p, repo, ['docs']);
+
+    // source_files escape → exactly one kind:path failure, assertion = the file
+    // path (path part before `@`), detail names the escape.
+    const pathFailures = result.failures.filter(
+      (f) => f.kind === 'path' && f.detail === 'source_file escapes repo root',
+    );
+    expect(pathFailures).toHaveLength(1);
+    expect(pathFailures[0].assertion).toBe(escapeRel);
+    expect(pathFailures[0].resolved).toBe(false);
+    // Canary content was NOT read: the cited sentinel symbol misses (one symbol
+    // failure), proving the file outside repoRoot was never opened.
+    const symbolFailures = result.failures.filter(
+      (f) => f.kind === 'symbol' && f.assertion === 'CANARY_OUTSIDE_REPO_SYMBOL',
+    );
+    expect(symbolFailures).toHaveLength(1);
   });
 });
 

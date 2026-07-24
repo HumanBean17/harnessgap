@@ -218,7 +218,9 @@ const program = new Command();
 
 program
   .name('harnessgap')
-  .description('Stateless detection-only CLI for harness gaps')
+  .description(
+    'Detect harness gaps in agent transcripts (scan/reflect are stateless; synthesize/review close the loop)',
+  )
   .version(pkg.version);
 
 program

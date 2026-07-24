@@ -172,6 +172,34 @@ describe('acceptProposal — path outside docs_dirs is refused', () => {
   });
 });
 
+describe('acceptProposal — target already exists is refused', () => {
+  it('does not move or delete; message mentions already exists / refusing', async () => {
+    const { acceptProposal, listProposals } = await import('../src/review.js');
+    const repo = makeTempDir('repo');
+    const src = writeProposalFile(
+      repo,
+      'src-billing-doc-abcd1234.md',
+      docFm('docs/architecture/billing.md'),
+    );
+    // Pre-create the target doc — accept must NOT silently clobber it.
+    const target = join(repo, 'docs', 'architecture', 'billing.md');
+    mkdirSync(join(repo, 'docs', 'architecture'), { recursive: true });
+    writeFileSync(target, '# Existing billing doc\n', 'utf8');
+
+    const [parsed] = listProposals(repo);
+    expect(parsed).toBeDefined();
+    const res = acceptProposal({ proposal: parsed!, repoRoot: repo, docsDirs: ['docs'] });
+
+    expect(res.ok).toBe(false);
+    expect(res.message).toMatch(/already exists|refusing/i);
+    // Source proposal is untouched (still in docs/_proposals/).
+    expect(existsSync(src)).toBe(true);
+    // Target content is unchanged — NOT overwritten with the proposal body.
+    expect(readFileSync(target, 'utf8')).toContain('Existing billing doc');
+    expect(readFileSync(target, 'utf8')).not.toContain('## Draft');
+  });
+});
+
 describe('rejectProposal — deletes the file', () => {
   it('removes the proposal from docs/_proposals/', async () => {
     const { rejectProposal, listProposals } = await import('../src/review.js');
