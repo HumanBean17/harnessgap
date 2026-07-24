@@ -151,15 +151,31 @@ export async function runSynthesize(opts: SynthesizeOptions): Promise<Synthesize
       const unitRecords = records.filter((r) =>
         r.areas.some((a) => a.key === diagnosis.unit.key),
       );
-      const outcome = await synthesizeOne({
-        diagnosis,
-        records: unitRecords,
-        repoRoot: filterRepo,
-        proposalsDir,
-        cfg,
-        harnessId,
-        runBackendFn: opts.runBackendFn,
-      });
+      // Write-phase fail-open: synthesizeOne guards its own backend/unwrap/parse
+      // stages, but buildBundle / factCheck / writeProposal's fs.writeFileSync
+      // are NOT inside synthesizeOne's try/catches. A throw there (EACCES /
+      // ENOSPC / EIO) would escape past the per-unit boundary and abort the
+      // whole batch via the outer catch — discarding any proposals already
+      // written. Wrap the whole call so a mid-batch write failure becomes a
+      // digest entry and the batch continues to the next unit.
+      let outcome: SynthesizeOutcome;
+      try {
+        outcome = await synthesizeOne({
+          diagnosis,
+          records: unitRecords,
+          repoRoot: filterRepo,
+          proposalsDir,
+          cfg,
+          harnessId,
+          runBackendFn: opts.runBackendFn,
+        });
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e);
+        const reason = `unit synthesis error: ${msg}`;
+        appendDigest(proposalsDir, diagnosis, reason);
+        digestNotes.push(`${diagnosis.unit.key}: ${reason}`);
+        continue;
+      }
       if (outcome.kind === 'written') {
         writtenProposals.push(outcome.relPath);
       } else if (outcome.kind === 'needs-human') {
