@@ -71,11 +71,12 @@ export function assertNewDocProposal(obj: unknown): Proposal {
   const unit = fm.unit;
   if (
     !isObject(unit) ||
+    unit.kind !== 'area' ||
     typeof unit.key !== 'string' ||
     unit.key === ''
   ) {
     throw new Error(
-      'proposal.frontmatter.unit.key must be a non-empty string',
+      'proposal.frontmatter.unit must be {kind:"area", key:<non-empty string>}',
     );
   }
   if (typeof fm.struggle_score !== 'number') {

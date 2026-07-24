@@ -141,6 +141,12 @@ describe('assertNewDocProposal — frontmatter fields', () => {
     expect(() => assertNewDocProposal(obj)).toThrow(/unit/i);
   });
 
+  it('throws when unit.kind is "task" (not "area")', () => {
+    const obj = valid();
+    obj.frontmatter.unit = { kind: 'task', key: 'src/billing' };
+    expect(() => assertNewDocProposal(obj)).toThrow(/unit/i);
+  });
+
   it('throws when struggle_score is missing', () => {
     const obj = valid();
     delete (obj.frontmatter as Record<string, unknown>).struggle_score;
