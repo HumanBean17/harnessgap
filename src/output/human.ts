@@ -33,8 +33,13 @@ interface HumanInput {
   diagnoses?: Diagnosis[];
 }
 
-// Fixed column widths for the leaderboard table.
-const AREA_W = 32;
+// Fixed column widths for the leaderboard table. AREA is the exception: its
+// width is computed per-render as max(AREA_MIN_W, longest flagged key) so area
+// keys are NEVER truncated (issue #34 — a truncated AREA column hid which path
+// was actually struggling). AREA_MIN_W only sets a comfortable floor so repos
+// with short keys keep the familiar aligned layout (and the corpus snapshot
+// stays byte-identical: every corpus key is shorter than this floor).
+const AREA_MIN_W = 32;
 const FLAGGED_W = 8;
 const MEAN_W = 11;
 // Wide enough for the longest cause (`inherent-complexity`) + `(0.99)` = 25.
@@ -92,9 +97,15 @@ export function formatHuman(input: HumanInput): string {
   if (flaggedAreas.length === 0) {
     lines.push('No flagged areas.');
   } else {
-    lines.push(tableHeader(hasCause));
+    // AREA column widens to fit the longest flagged key (issue #34): full keys
+    // are always visible, never `...`-truncated. AREA_MIN_W is just the floor.
+    const areaWidth = Math.max(
+      AREA_MIN_W,
+      ...flaggedAreas.map((a) => a.key.length),
+    );
+    lines.push(tableHeader(hasCause, areaWidth));
     for (const area of flaggedAreas) {
-      lines.push(tableRow(area, hasCause ? (diagnoses as Diagnosis[]) : []));
+      lines.push(tableRow(area, hasCause ? (diagnoses as Diagnosis[]) : [], areaWidth));
     }
   }
 
@@ -164,15 +175,15 @@ function baselineLines(baseline: BaselineAssessment, finding: RepoFinding | null
 }
 
 /** The column-header row, aligned to match the data rows. */
-function tableHeader(hasCause: boolean): string {
-  const base = `${'AREA'.padEnd(AREA_W)} | ${'FLAGGED'.padStart(FLAGGED_W)} | ${'MEAN SCORE'.padStart(MEAN_W)}`;
+function tableHeader(hasCause: boolean, areaWidth: number): string {
+  const base = `${'AREA'.padEnd(areaWidth)} | ${'FLAGGED'.padStart(FLAGGED_W)} | ${'MEAN SCORE'.padStart(MEAN_W)}`;
   if (!hasCause) return `${base} | TOP SIGNALS`;
   return `${base} | ${'CAUSE'.padStart(CAUSE_W)} | TOP SIGNALS`;
 }
 
 /** One area row, column-aligned. `diagnoses` is `[]` when the cause column is off. */
-function tableRow(area: AreaRow, diagnoses: Diagnosis[]): string {
-  const areaCol = fit(area.key, AREA_W);
+function tableRow(area: AreaRow, diagnoses: Diagnosis[], areaWidth: number): string {
+  const areaCol = area.key.padEnd(areaWidth);
   const flaggedCol = String(area.sessions_flagged).padStart(FLAGGED_W);
   const meanCol = area.mean_score.toFixed(1).padStart(MEAN_W);
   const signalsCol = area.top_signals.map((t) => t.display).join(', ');
@@ -192,15 +203,6 @@ function causeCell(areaKey: string, diagnoses: Diagnosis[]): string {
   const d = diagnoses.find((x) => x.unit.key === areaKey);
   if (d === undefined || d.cause === 'unclassified') return '-';
   return `${d.cause}(${d.confidence.toFixed(2)})`;
-}
-
-/**
- * Fit a string to `width`: pad with spaces if shorter, truncate with "..." if
- * longer. Keeps the column alignment intact.
- */
-function fit(s: string, width: number): string {
-  if (s.length <= width) return s.padEnd(width);
-  return s.slice(0, width - 3) + '...';
 }
 
 /** Replace a `$HOME` prefix with `~` for a shorter, readable repo header. */

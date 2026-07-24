@@ -53,6 +53,14 @@ describe('packaging (package.json + runtime dep tree)', () => {
       dependencies?: Record<string, unknown>;
     };
     const deps = tree.dependencies ?? {};
-    expect(Object.keys(deps).sort()).toEqual(['commander', 'yaml']);
+    // Exclude the package itself: dogfooding the CLI (`npm install -g .` /
+    // `npm link` from this repo) leaves an extraneous `node_modules/harnessgap`
+    // copy that `npm ls` reports as a top-level dependency. That is a local dev
+    // artifact, not a runtime/egress dependency — this audit guards against
+    // third-party deps the shipped package pulls in, so a self-entry is filtered
+    // out. A real undeclared dep (e.g. `axios`) is NOT the package name and is
+    // still caught here.
+    const runtimeDeps = Object.keys(deps).filter((k) => k !== pkg.name).sort();
+    expect(runtimeDeps).toEqual(['commander', 'yaml']);
   });
 });
