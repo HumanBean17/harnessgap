@@ -1,7 +1,7 @@
 {
   "name": "harnessgap",
   "version": "0.1.5",
-  "description": "Stateless detection-only CLI that finds harness gaps in Claude Code transcripts",
+  "description": "Detect harness gaps in agent transcripts (Claude Code / Qwen Code / GigaCode) and synthesize doc proposals",
   "license": "MIT",
   "author": "Dmitry Teryaev",
   "homepage": "https://github.com/HumanBean17/harnessgap#readme",

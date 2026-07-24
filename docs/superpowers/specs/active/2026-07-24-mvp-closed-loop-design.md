@@ -176,7 +176,7 @@ FactCheckResult = {
 - **Surfaces the diagnosed `cause` + `confidence` + the `evidence_refs` array + the fact-check `verification`** from frontmatter — so a reviewer sanity-checks the *rationale* (wrong-cause mitigation, §1), not just the label, and treats a low-confidence / thin-evidence `doc` differently from a high-confidence one.
 - **accept** → moves the artifact to its authoritative `Proposal.path` (validated to be under a configured `docs_dir`). Closes the former open question on category derivation — the path is in the proposal, not derived from `docs_dirs`.
 - **reject** → deletes the proposal.
-- **edit** → opens `$EDITOR`; MVP trusts the human edit (no re-fact-check — the pre-write check already ran on the backend output; re-check is deferred).
+- **edit** → *(DEFERRED — see §13.3 Curator row)* opens `$EDITOR` on the proposal; MVP trusts the human edit (no re-fact-check — the pre-write check already ran on the backend output; re-check is deferred). Not shipped in the MVP because `$EDITOR` spawn needs `child_process` outside the egress allowlist (`src/synthesizer/*` + `src/git.ts`); `review` ships **accept / reject only** for now. The interim substitute is a **print-path variant** (the proposal's on-disk path is already surfaced so a user can open it in their editor manually) pending either that variant or a deliberate allowlist widening.
 - `--json` lists pending proposals without a TTY; `--yes` accepts non-interactively (demo/CI).
 
 ## 7. Doc-read consumption (Measurement lite) — parent §4.7
@@ -271,7 +271,7 @@ Every contract here is the DESIGN.md contract, minimally populated (`Proposal` =
 | Router | `explain` pointer (manual, pure fn) | live hook: Claude `PreToolUse` + Qwen/GigaCode equivalent (`init` wires per harness); pointer default, full-injection opt-in | accepted docs in repo; pointer fn | hook owns its **own** area-resolution (`(cwd,tool_input)→area`) + cache + JSON-payload format; it **calls** `pointer.ts` for the text — do **not** wrap `explain`'s CLI surface |
 | Measurement | `docs_read`/`docs_injected` collected (timing-bearing) | read-vs-not-read `stats` delta + confidence band; team `.harnessgap/team/struggle.jsonl` | `docs_read` populated + docs consulted | `stats` consumes `docs_read` (the `t` enables before/after); team file aggregates already-scrubbed records |
 | Synthesizer | `dedupe:'none'`; heads-only; new-doc only | embeddings dedupe; AST `structure_only`; `edit-proposal` (range-apply on accept + second fact-check path) | — | swap dedupe impl behind the stable `dedupe` field; AST replaces heads under the same flag; `edit-proposal` extends `Proposal` |
-| Curator | accept-to-disk via `review` | `harnessgap pr` (gh); CLAUDE.md/AGENTS.md fallback index | — | new `pr` command; index block between markers `<!-- harnessgap:index:start -->` / `:end -->` (parent §4.5) |
+| Curator | accept-to-disk via `review` (accept / reject only) | `edit` review action (`$EDITOR` spawn — needs `child_process` outside the allowlist → print-path variant or allowlist widening); `harnessgap pr` (gh); CLAUDE.md/AGENTS.md fallback index | — | `edit`: add a `child_process` allowlist entry for `src/review.ts` (or emit the proposal path and let the user edit externally); `pr`: new command; index block between markers `<!-- harnessgap:index:start -->` / `:end -->` (parent §4.5) |
 | Calibration | #34 Phase 0 eyeball + corpus | #34 Phase 1 + Phase 3 | — | see §11 — recall-substitute (fixtures + read-the-transcript labeling) |
 
 ### 13.4 Forward-compat invariants (preserve these)
