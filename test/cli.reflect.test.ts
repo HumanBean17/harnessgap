@@ -18,6 +18,7 @@ import {
   setupTempRepo,
   makeTempDir,
   cleanupTempDirs,
+  writeTranscript,
 } from './helpers/builder.js';
 import type { EventSpec } from './helpers/builder.js';
 import type { ReflectFinding, StopHookOutput } from '../src/types.js';
@@ -72,6 +73,22 @@ function cleanFixture(): string {
   return writeTempTranscript(
     mkSession(repo, { name: 'clean', events: CLEAN_EVENTS }),
   );
+}
+
+/**
+ * A tripping fixture laid out under the discovery tree
+ * `<claudeDir>/projects/proj/<id>.jsonl` (not a flat temp file) so `--session`
+ * can resolve it by filename stem. Returns the harness dir + the stem id.
+ */
+function tripSessionFixture(id = 'sess-trip'): { claudeDir: string; id: string } {
+  const { repo, claudeDir } = setupTempRepo();
+  writeTranscript(
+    claudeDir,
+    'proj',
+    id,
+    mkSession(repo, { name: id, stepMs: 200_000, events: TRIP_EVENTS }),
+  );
+  return { claudeDir, id };
 }
 
 /** Spawn the built CLI with given args; resolve stdout/stderr/exit code. */
@@ -157,5 +174,61 @@ describe('harnessgap reflect CLI (spawn-based)', () => {
 
     expect(code).toBe(0);
     expect(stdout).toContain('reflect');
+  });
+
+  it('6. reflect --session <id> --harness-dir <dir> → valid ReflectFinding JSON, session_id matches', async () => {
+    const { claudeDir, id } = tripSessionFixture();
+    const { stdout, code } = await runCli([
+      'reflect',
+      '--session',
+      id,
+      '--harness-dir',
+      claudeDir,
+      '--format',
+      'json',
+    ]);
+
+    expect(code).toBe(0);
+    const parsed = JSON.parse(stdout) as ReflectFinding;
+    expect(parsed.session_id).toBe(id);
+    // Non-vacuous: same tripping shape as test 1 → trip=true.
+    expect(parsed.trip).toBe(true);
+  });
+
+  it('7. reflect --session <unknown-id> → non-zero exit, stderr mentions the id', async () => {
+    const { claudeDir } = tripSessionFixture();
+    const { stderr, code } = await runCli([
+      'reflect',
+      '--session',
+      'nope',
+      '--harness-dir',
+      claudeDir,
+      '--format',
+      'json',
+    ]);
+
+    expect(code).not.toBe(0);
+    expect(stderr).toMatch(/no transcript found with session id 'nope'/);
+  });
+
+  it('8. reflect --session + --transcript → non-zero exit, stderr mentions the conflict', async () => {
+    const { claudeDir, id } = tripSessionFixture();
+    const transcript = join(claudeDir, 'projects', 'proj', `${id}.jsonl`);
+    const { stderr, code } = await runCli([
+      'reflect',
+      '--session',
+      id,
+      '--transcript',
+      transcript,
+      '--harness-dir',
+      claudeDir,
+      '--format',
+      'json',
+    ]);
+
+    expect(code).not.toBe(0);
+    expect(stderr).toMatch(/conflict/i);
+    expect(stderr).toMatch(/--session/);
+    expect(stderr).toMatch(/--transcript/);
   });
 });

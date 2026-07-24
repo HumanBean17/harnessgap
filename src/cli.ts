@@ -70,6 +70,7 @@ interface ScanOpts {
 interface ReflectOpts {
   transcript?: string;
   latest?: boolean;
+  session?: string;
   repo?: string;
   excludeSession?: string;
   stopHookActive?: boolean;
@@ -157,6 +158,31 @@ function resolveHarnessForCommand(
   };
 }
 
+/**
+ * `reflect` target flags: `--session` is mutually exclusive with `--transcript`
+ * and `--latest` (three different ways to pick the one session). We only guard
+ * conflicts involving `--session` — the pre-existing `--transcript`/`--latest`
+ * pair keeps its lenient "transcript wins" behavior unchanged. Throws
+ * ConfigError so the conflict surfaces via the standard stderr+exit-1 path.
+ */
+function validateReflectTargetFlags(
+  session: string | undefined,
+  transcript: string | undefined,
+  latest: boolean | undefined,
+): void {
+  if (session === undefined) return;
+  if (transcript !== undefined) {
+    throw new ConfigError(
+      'conflict: --session cannot be combined with --transcript (pick one)',
+    );
+  }
+  if (latest) {
+    throw new ConfigError(
+      'conflict: --session cannot be combined with --latest (pick one)',
+    );
+  }
+}
+
 const program = new Command();
 
 program
@@ -241,6 +267,10 @@ program
   .description('Reflect on a single session (session-end n=1 detection)')
   .option('--transcript <path>', 'reflect on one given transcript file')
   .option('--latest', 'reflect on the most-recent session for --repo')
+  .option(
+    '--session <id>',
+    'reflect on the session whose id matches a transcript filename stem',
+  )
   .option('--repo <path>', 'target repo toplevel (used with --latest)')
   .option('--exclude-session <id>', 'exclude a session id (used with --latest)')
   .option('--stop-hook-active', 'the Claude Code Stop hook is already active')
@@ -277,10 +307,15 @@ program
         opts.harnessDir,
         opts.claudeDir,
       );
+      // --session is a third target mode (besides --transcript / --latest);
+      // enforce mutual exclusion up front so conflicting picks fail fast here
+      // rather than as a silent precedence win inside runReflect.
+      validateReflectTargetFlags(opts.session, opts.transcript, opts.latest);
 
       const reflectOpts: ReflectOptions = {
         transcript: opts.transcript,
         latest: opts.latest,
+        session: opts.session,
         repo: opts.repo,
         excludeSession: opts.excludeSession,
         stopHookActive: opts.stopHookActive,

@@ -378,13 +378,23 @@ export async function runScan(opts: ScanOptions): Promise<ScanResult> {
 //  - --latest --repo: discover every transcript under claudeDir, keep those
 //    whose main repo === targetRepo, drop --exclude-session, pick the
 //    max-started_at one (the manual path — same order of cost as scan).
+//  - --session <id>: discover every transcript, match the one whose filename
+//    stem === id, stream it. Throws on zero/>1 matches (not a fail-open case).
 // Fail-open throughout: streaming/resolution failures, and a --latest that finds
 // nothing, degrade to a trip:false finding (the hook-stop formatter yields `{}`);
-// only `loadConfig`/arg errors throw.
+// only `loadConfig`/arg errors throw — and `--session` lookups that miss/collide.
 
 export interface ReflectOptions {
   transcript?: string;
   latest?: boolean;
+  /**
+   * Resolve one session by id (its transcript filename stem): discover every
+   * transcript for the resolved harness, match the stem, and stream the (one)
+   * hit. Throws a clear error on zero or >1 matches — a wrong/colliding id is a
+   * user error, not a "nothing to reflect on" fail-open case. Ignores `repo`
+   * (session ids are unique per harness dir).
+   */
+  session?: string;
   repo?: string;
   excludeSession?: string;
   stopHookActive?: boolean;
@@ -431,7 +441,9 @@ export async function runReflect(opts: ReflectOptions): Promise<ReflectResult> {
   } else if (opts.transcript !== undefined) {
     harnessId = sniffHarnessFromTranscript(opts.transcript) ?? 'claude-code';
   } else {
-    // --latest without a flag: no file to sniff, preserve Task-10 precedence.
+    // --latest / --session without a flag: no single file in hand to sniff
+    // (the --session match file is only known AFTER discovery, which needs the
+    // spec), so preserve Task-10 precedence (config → 'claude-code').
     // cfg.harness is always set (DEFAULT_CONFIG), the literal is belt-and-suspenders.
     harnessId = cfg.harness ?? 'claude-code';
   }
@@ -442,8 +454,9 @@ export async function runReflect(opts: ReflectOptions): Promise<ReflectResult> {
   const cache = new Map<string, RepoResolution | null>();
 
   // 2. Resolve the single envelope to reflect on. --transcript wins (the
-  //    per-stop hook path — cheap, one file); --latest discovers the most-recent
-  //    session for the repo; neither → nothing to reflect on.
+  //    per-stop hook path — cheap, one file); --session matches an id to one
+  //    discovered file and streams it; --latest discovers the most-recent
+  //    session for the repo; none → nothing to reflect on.
   let envelope: NormalizedEnvelope | null;
   let cwds: string[];
   let stampedCheckoutRoot: string | null = null;
@@ -451,6 +464,10 @@ export async function runReflect(opts: ReflectOptions): Promise<ReflectResult> {
     const streamed = await spec.streamSession(opts.transcript);
     envelope = streamed.envelope;
     cwds = streamed.cwds;
+  } else if (opts.session !== undefined) {
+    const picked = await pickSessionEnvelope(opts, spec);
+    envelope = picked.envelope;
+    cwds = picked.cwds;
   } else if (opts.latest) {
     const picked = await pickLatestEnvelope(opts, spec, cache);
     envelope = picked.envelope;
@@ -480,6 +497,48 @@ export async function runReflect(opts: ReflectOptions): Promise<ReflectResult> {
   }
 
   return { output, exitCode: 0 };
+}
+
+/**
+ * --session resolution: discover every transcript for the resolved harness and
+ * return the one whose filename stem === `opts.session` (the parsers set
+ * `session_id` to exactly that stem, so this is an authoritative match — no
+ * streaming needed to identify the file). `repo` is intentionally ignored:
+ * session ids are unique per harness dir. Throws on zero matches (unknown id —
+ * a user error, not a fail-open case) and on >1 matches (id collision across
+ * project slugs — ambiguous, refuse rather than guess). The stem strip mirrors
+ * the parsers' own `basename(filePath).replace(/\.[^.]+$/, '')`.
+ */
+async function pickSessionEnvelope(
+  opts: ReflectOptions,
+  spec: HarnessSpec,
+): Promise<{ envelope: NormalizedEnvelope; cwds: string[] }> {
+  // Discovery routes through the spec — same unified dir resolution as runScan
+  // (harnessDir ?? claudeDir, else spec.defaultRootDir()).
+  const rootOverride = opts.harnessDir ?? opts.claudeDir;
+  const { files } = discoverForSpec(spec, rootOverride);
+
+  const id = opts.session as string;
+  const matches = files.filter(
+    (f) => path.basename(f).replace(/\.[^.]+$/, '') === id,
+  );
+
+  if (matches.length === 0) {
+    const where = rootOverride ?? spec.defaultRootDir();
+    throw new Error(
+      `no transcript found with session id '${id}' under ${where}`,
+    );
+  }
+  if (matches.length > 1) {
+    // Defensive: UUIDs shouldn't collide across project slugs, but if one does
+    // the result is ambiguous — surface it rather than silently picking one.
+    throw new Error(
+      `multiple transcripts match session id '${id}': ${matches.join(', ')}`,
+    );
+  }
+
+  const streamed = await spec.streamSession(matches[0]);
+  return { envelope: streamed.envelope, cwds: streamed.cwds };
 }
 
 /**

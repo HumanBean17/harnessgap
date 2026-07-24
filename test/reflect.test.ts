@@ -20,6 +20,8 @@ import {
   makeTempDir,
   cleanupTempDirs,
   writeTranscript,
+  mkQwenSession,
+  writeQwenTranscript,
 } from './helpers/builder.js';
 import type { EventSpec } from './helpers/builder.js';
 import type { ReflectFinding, StopHookOutput } from '../src/types.js';
@@ -458,5 +460,70 @@ describe('runReflect — privacy: transcript prose never leaks; primitives + clo
         expect(finding.zero_edit).toBe(false);
       }
     }
+  });
+});
+
+describe('runReflect — --session <id> resolution', () => {
+  // Fixture: one claudeDir holding 3 transcripts (stems t1/t2/t3) under the
+  // Claude `projects/<slug>/<name>.jsonl` layout. session_id is the filename
+  // stem, so --session <stem> must resolve exactly that file. Each session has
+  // one read so it is well-formed (started_at set).
+  function setupMultiSession(): { claudeDir: string; ids: string[] } {
+    const target = setupTempRepo();
+    const claudeDir = target.claudeDir;
+    const oneRead: EventSpec[] = [{ kind: 'read', file: 'src/a.ts' }];
+    const ids = ['t1', 't2', 't3'];
+    for (const name of ids) {
+      writeTranscript(
+        claudeDir,
+        'proj',
+        name,
+        mkSession(target.repo, { name, startMs: 1_000, events: oneRead }),
+      );
+    }
+    return { claudeDir, ids };
+  }
+
+  it('resolves the matching session by filename stem', async () => {
+    const { claudeDir, ids } = setupMultiSession();
+    const result = await runReflect({
+      session: 't2',
+      claudeDir,
+      format: 'json',
+    });
+    expect(result.exitCode).toBe(0);
+    const parsed = JSON.parse(result.output) as ReflectFinding;
+    expect(parsed.session_id).toBe('t2');
+    // Sanity: the other ids are NOT returned.
+    expect(['t1', 't3']).not.toContain(parsed.session_id);
+    expect(ids).toEqual(['t1', 't2', 't3']); // fixture unchanged
+  });
+
+  it('throws a clear error when no transcript matches the id', async () => {
+    const { claudeDir } = setupMultiSession();
+    await expect(
+      runReflect({ session: 'does-not-exist', claudeDir, format: 'json' }),
+    ).rejects.toThrow(/no transcript found with session id 'does-not-exist'/);
+  });
+
+  it('resolves by stem under the Qwen chats/ layout when --harness is set', async () => {
+    const target = setupTempRepo();
+    const rootDir = target.claudeDir; // any temp dir; layout added by writer
+    const oneRead: EventSpec[] = [{ kind: 'read', file: 'src/a.ts' }];
+    writeQwenTranscript(
+      rootDir,
+      'proj',
+      'q-sess',
+      mkQwenSession(target.repo, { name: 'q-sess', events: oneRead }),
+    );
+    const result = await runReflect({
+      session: 'q-sess',
+      harness: 'qwen-code',
+      harnessDir: rootDir,
+      format: 'json',
+    });
+    expect(result.exitCode).toBe(0);
+    const parsed = JSON.parse(result.output) as ReflectFinding;
+    expect(parsed.session_id).toBe('q-sess');
   });
 });
