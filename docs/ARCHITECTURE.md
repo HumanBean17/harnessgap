@@ -1,9 +1,11 @@
-# harnessgap — Architecture (detection + opt-in diagnosis)
+# harnessgap — Architecture (detection + opt-in diagnosis + closed-loop MVP)
 
-Internal reference for contributors. Covers the `harnessgap scan` pipeline as
-implemented in `src/`. For user-facing usage see [`../README.md`](../README.md);
-for the design contract see the
-[spec](superpowers/specs/archive/2026-07-12-harnessgap-detection-slice-design.md).
+Internal reference for contributors. Covers the `harnessgap scan` pipeline and
+the opt-in closed loop (`synthesize` / `review` / `explain`) as implemented in
+`src/`. For user-facing usage see [`../README.md`](../README.md); for the design
+contracts see the
+[detection spec](superpowers/specs/archive/2026-07-12-harnessgap-detection-slice-design.md)
+and the [closed-loop MVP spec](superpowers/specs/active/2026-07-24-mvp-closed-loop-design.md).
 
 ## 1. Overview
 
@@ -17,14 +19,23 @@ struggle signals, scores sessions as a percentile of composites (with an
 absolute-threshold bootstrap for thin history), localizes struggle to repo
 areas, and prints a leaderboard to stdout.
 
-The contract is **stateless + offline**:
+The **opt-in closed loop** (Phase 2 MVP) composes the same detect → diagnose
+front-end, then adds `synthesize` (draft + fact-check + write a new-doc
+proposal), `review` (accept/reject), and `explain` (routing pointer +
+consultation count). It is the first path that **writes to disk and shells out**
+— see §8 for the scope boundary.
+
+The **default-path** contract is **stateless + offline**:
 
 - **No network.** No `fetch`/`http`/`https`/`net`/`undici` imports and no
   `fetch()` calls anywhere in `src/`. Enforced by `test/egress.test.ts` via
   the patterns in `src/egress.ts`. Transcripts never leave the machine.
-- **No disk writes.** harnessgap reads transcripts and prints to stdout. It
-  creates no files, writes no state, persists nothing. (OS page cache/swap are
-  out of scope and common to any process that reads files.)
+- **No disk writes, no subprocess.** `scan` / `reflect` / `explain` read
+  transcripts and print to stdout — they create no files, spawn no processes,
+  persist nothing. (OS page cache/swap are out of scope and common to any
+  process that reads files.) The opt-in `synthesize` / `review` cross both
+  boundaries — bounded by `child_process` (the agent print-mode CLI) + the
+  egress allowlist (§8), not by a network import.
 
 All pipeline stages are pure functions of their inputs; the only I/O lives in
 `src/walk.ts`, `src/adapter/stream.ts` + `src/adapter/qwen/stream.ts`,
@@ -36,14 +47,14 @@ only adds persistence.
 
 | File | Responsibility | Key exports |
 | --- | --- | --- |
-| `src/types.ts` | Shared type catalog. Field names/shapes are contracts pinned to the spec. | `NormalizedEvent`, `NormalizedEnvelope`, `SignalValues`, `StruggleRecord`, `AreaRow`, `JsonOutput`, `Config`, `Warnings`, `SignalName`, `ScoringMode`, `Severity`, `BaselinePath`, `BaselineState`, `BaselineAssessment`, `RepoFinding`, `ToolKind`, `EventKind`, `ReflectFinding`, `StopHookOutput`, `ReflectFrame`, `Cause`, `SessionEvidence`, `EvidenceRef`, `Diagnosis`, `CmdClass`, `FileClass`, `HarnessId`, `TranscriptLayout`, `CapabilityKey`, `CapabilityMatrix`, `HarnessSpec`, `InitResult`, `StreamResult`, `StreamWarnings` |
-| `src/config.ts` | Load + validate `.harnessgap.yml`; deep-merge over defaults; parse `--since` durations; validate the `harness:` key against the `HarnessId` union (default `claude-code`). | `loadConfig`, `parseDuration`, `DEFAULT_CONFIG`, `ConfigError` |
-| `src/git.ts` | Stat-based MAIN-repo resolver. Walks up from a cwd to the nearest directory `.git` (the main repo; worktrees only hold a `.git` file); also recovers SIBLING worktrees by scanning candidate siblings' `.git/worktrees/<name>/gitdir` registrations, returning the recovered checkout root alongside the repo. No git invocation, no shell. Memoized by cwd. | `resolveRepo`, `RepoResolution`, `resolveMainRepo`, `walkToRepo` |
+| `src/types.ts` | Shared type catalog. Field names/shapes are contracts pinned to the spec. | `NormalizedEvent`, `NormalizedEnvelope`, `SignalValues`, `StruggleRecord`, `AreaRow`, `JsonOutput`, `Config`, `Warnings`, `SignalName`, `ScoringMode`, `Severity`, `BaselinePath`, `BaselineState`, `BaselineAssessment`, `RepoFinding`, `ToolKind`, `EventKind`, `ReflectFinding`, `StopHookOutput`, `ReflectFrame`, `Cause`, `SessionEvidence`, `EvidenceRef`, `Diagnosis`, `CmdClass`, `FileClass`, `HarnessId`, `TranscriptLayout`, `CapabilityKey`, `CapabilityMatrix`, `HarnessSpec`, `InitResult`, `StreamResult`, `StreamWarnings`, `DocRead`, `DocInjection`, `Proposal`, `ProposalFrontmatter`, `Verification`, `FactCheckResult`, `FactCheckFailure`, `ResolvedBackend` |
+| `src/config.ts` | Load + validate `.harnessgap.yml`; deep-merge over defaults; parse `--since` durations; validate the `harness:` key against the `HarnessId` union (default `claude-code`). `KNOWN_TOP_KEYS` is six: `harness`, `detector`, `areas`, `docs_dirs`, `diagnose`, `synthesizer` (the closed-loop MVP added `synthesizer`; unknown keys are still rejected). | `loadConfig`, `parseDuration`, `DEFAULT_CONFIG`, `ConfigError` |
+| `src/git.ts` | Stat-based MAIN-repo resolver. Walks up from a cwd to the nearest directory `.git` (the main repo; worktrees only hold a `.git` file); also recovers SIBLING worktrees by scanning candidate siblings' `.git/worktrees/<name>/gitdir` registrations, returning the recovered checkout root alongside the repo. No git invocation for resolution, no shell. Memoized by cwd. Also hosts `isValidSha` (closed-loop MVP) — the **one** git-subprocess call site: shells out to `git cat-file` to validate a `source_files@<sha>` pin during fact-check; this is why `src/git.ts` is on the `child_process` allowlist (§8). | `resolveRepo`, `RepoResolution`, `resolveMainRepo`, `walkToRepo`, `isValidSha` |
 | `src/walk.ts` | Discover `.jsonl` transcripts under a harness root. Takes a `TranscriptLayout` (`projectsSegment` + optional `sessionSubdir` + `extension`) so the same code handles Claude's flat `<root>/projects/<slug>/*.jsonl` and Qwen/GigaCode's `<root>/projects/<slug>/chats/*.jsonl`. Rejects symlinks. `defaultClaudeDir` is a deprecated alias for `defaultRootDir('claude-code')`. | `discoverTranscripts`, `defaultRootDir`, `defaultClaudeDir` |
 | `src/relativize.ts` | Pure file-path relativization: strip the repo-root prefix, then collapse worktree checkout prefixes — `.<hidden>/worktrees/<name>/` (Claude Code's `.claude/worktrees/…`) OR `.worktrees/<name>/` (a hidden checkout dir named `worktrees` itself) — so the same file across the main checkout and nested worktrees aggregates into one area; also strips a sibling-worktree checkout root (`worktreeCheckoutRoot`, passed by the resolver) so sibling-worktree files collapse onto the same repo-relative areas as the main checkout. | `relativizeFilePath`, `stripWorktreePrefix`, `relativizeEnvelopeFiles` |
-| `src/pipeline.ts` | Thin I/O shell: orchestrates walk → stream → resolve-main-repo → relativize → detect → aggregate → output. Also hosts `runReflect`, the n=1 session-end analog (see §10). | `runScan`, `ScanOptions`, `ScanResult`, `runReflect`, `ReflectOptions`, `ReflectResult` |
+| `src/pipeline.ts` | Thin I/O shell: orchestrates walk → stream → resolve-main-repo → relativize → detect → aggregate → output. Also hosts `runReflect`, the n=1 session-end analog (see §10). | `runScan`, `ScanOptions`, `ScanResult`, `collectEnvelopes`, `CollectEnvelopesOptions`, `CollectedEnvelopes`, `runReflect`, `ReflectOptions`, `ReflectResult` |
 | `src/cli.ts` | commander bin entry. Parses args, awaits `runScan`/`runReflect`, routes `init <agent>` through `resolveHarness(id).installHook`. `scan`/`reflect` accept `--harness`/`--harness-dir` (with `--claude-dir` as a deprecated alias that conflicts with non-claude `--harness`). Writes stdout, exits. | `program` (`scan` default, `reflect`, `init` commands) |
-| `src/egress.ts` | §11 no-network guard: regexes for forbidden imports + `fetch()` calls. Single source of truth shared by the egress audit. | `FORBIDDEN_IMPORT`, `FORBIDDEN_FETCH_CALL`, `hasForbiddenImport`, `hasFetchCall`, `hasForbiddenEgress` |
+| `src/egress.ts` | §8 no-network + `child_process`-confinement guard. Two gates: (1) no `src/` file may import a network module (`http`/`https`/`net`/`undici`/`fetch`) or invoke the global `fetch`; (2) `node:child_process` imports live only in `src/synthesizer/**` + `src/git.ts`. Single source of truth shared by the egress audit. The gate guards the **default path only** — opt-in `synthesize` egress is bounded by `child_process` + the trusted agent CLI, not by this gate. | `FORBIDDEN_IMPORT`, `FORBIDDEN_FETCH_CALL`, `hasForbiddenEgress`, `CHILD_PROCESS_IMPORT`, `CHILD_PROCESS_ALLOWLIST`, `hasChildProcessImport`, `isChildProcessAllowed` |
 | `src/adapter/scrub.ts` | Pattern-catalog secret scrubber (7 rules). No entropy heuristic. | `scrubCmd`, `scrubQuery`, `scrubFiles` |
 | `src/adapter/taxonomy.ts` | Claude Code tool-name → `ToolKind` map. | `mapToolKind` |
 | `src/adapter/parse.ts` | Per-record normalizer: one parsed JSONL record → one `NormalizedEvent` (or null). Scrubbing + correction flag applied here. | `normalizeRecord` |
@@ -59,7 +70,7 @@ only adds persistence.
 | `src/detector/record.ts` | Pure projection: assembles a `StruggleRecord` from envelope + signals + score + areas. | `assembleStruggleRecord` |
 | `src/detector/orientation.ts` | Pure pre-edit orientation metric: distinct depth-2 dir prefixes + distinct read files before the first edit. `null` for zero-edit sessions. | `computePreEditOrientation` |
 | `src/detector/ambient.ts` | Pure ambient baseline assessor: combines orientation + acute struggle-rate paths into a `RepoFinding` (null unless elevated) + always-populated `BaselineAssessment`. | `assessAmbient` |
-| `src/detector/index.ts` | Detector orchestration: signals → score (once, whole batch) → ambient baseline → areas → record. Returns `{records, finding, baseline}`. Under `--diagnose`, also runs the opt-in `computeEvidence` projection per envelope (the only detector call site for the Diagnoser; absent by default so `StruggleRecord.evidence` is unset and default output stays byte-identical). | `runDetector` |
+| `src/detector/index.ts` | Detector orchestration: signals → score (once, whole batch) → ambient baseline → areas → record. Returns `{records, finding, baseline}`. Under `--diagnose`, also runs the opt-in `computeEvidence` projection per envelope (the only detector call site for the Diagnoser; absent by default so `StruggleRecord.evidence` is unset and the human leaderboard stays byte-identical). Also collects the always-on `docs_read`/`docs_injected` (closed-loop consumption fields) regardless of `--diagnose`. | `runDetector` |
 | `src/diagnoser/classify-util.ts` | Pure cmd/file classifiers over fixed catalogs. `classifyCmd` reuses `cfg.areas.test_cmd_patterns` for the `test` bucket. | `classifyCmd`, `classifyFile` |
 | `src/diagnoser/evidence.ts` | Pure evidence projection: buckets failed execs by cmd-class + edited files by file-class. Single pass; zero-filled buckets. | `computeEvidence` |
 | `src/diagnoser/profile.ts` | Pure per-area profile builder: groups flagged records by area, derives per-signal medians, elevation flags (mode-aware: bootstrap → `bootstrap_thresholds`; percentile → strictly above the cohort median), and element-wise evidence sums. | `buildProfiles`, `UnitProfile` |
@@ -73,13 +84,28 @@ only adds persistence.
 | `src/output/hook.ts` | Pure session-end reflect builders: a `StruggleRecord` → `ReflectFinding` decision + the Claude Code `Stop` hook payload. No I/O, no node builtins. Originally Claude-Code-specific; Qwen Code's Stop hook is a byte-identical Claude fork, so the same payload shape serves all three harnesses via `src/init/qwen.ts`. | `buildReflectFinding`, `formatStopHookOutput` |
 | `src/init/claude.ts` | `harnessgap init claude` installer: writes the fail-open Stop-hook wrapper, idempotently merges `hooks.Stop` in `.claude/settings.json`, writes the `/reflect` command. Only `node:fs` + `node:path` (the wrapper's `child_process` lives in the emitted runtime artifact under `.claude/`, not in `src/`). `mergeStopHook` is exported so `src/init/qwen.ts` can reuse the dedup-by-command merge. | `initClaude`, `mergeStopHook` |
 | `src/init/qwen.ts` | `harnessgap init qwen` / `init gigacode` installer: mirrors `initClaude` — writes the same three artifacts (fail-open Stop-hook wrapper, idempotent `hooks.Stop` settings.json merge, `/reflect` command) under `<cwd>/.qwen/` (or `.gigacode/`). Reuses `CLI_PATH`, `buildWrapperSource`, and `mergeStopHook` from `src/init/claude.ts` (Qwen Code's Stop registration shape + payload are byte-identical to Claude's — a Claude Code fork; see file header for the research contract), and `formatStopHookOutput` from `src/output/hook.ts` unchanged. Only `node:fs` + `node:path`. | `initQwen`, `initGigacode` |
+| `src/synthesizer/proposal.ts` | Pure `Proposal` schema-validator. `assertNewDocProposal` validates the unwrapped backend object against the new-doc `Proposal` contract (required fields, `unit.kind === 'area'`, `cited_symbols`/`referenced_paths` arrays); throws on violation. `isEditProposal` recognizes the deferred `edit-proposal` variant so the orchestrator can downgrade it to a "needs human" note. | `assertNewDocProposal`, `isEditProposal` |
+| `src/synthesizer/backend.ts` | Per-harness backend resolution + invocation + envelope unwrap. `resolveBackend(harness, cfg)` → `{cmd, args, model}` (explicit `synthesizer.backend` override wins; else `claude -p` / `qwen -p` / `gigacode -p`). `runBackend` spawns the print-mode CLI via `node:child_process` (the only subprocess egress besides `git.ts`'s `isValidSha`), prompt on stdin, captures stdout. `extractProposal(stdout, harness)` is the per-harness envelope-unwrap adapter (Claude's `{type:'result', result:'<json-string>'}` re-parse vs Qwen/GigaCode's Gemini-lineage envelope). Fail-open: missing binary / non-zero exit / unparseable → digest entry, never crash. | `resolveBackend`, `runBackend`, `extractProposal`, `ResolvedBackend` |
+| `src/synthesizer/bundle.ts` | Pure evidence-bundle assembler. Builds the prompt sent to the backend: derived-only `Diagnosis` + unit signals/area key + docs inventory (paths + size-capped bodies) + repo file-heads under the area prefix (size-capped via `max_file_head_bytes`, scrubbed via `scrubContent`, governed by `structure_only`). No transcript prose. | `buildBundle`, `BuildBundleArgs` |
+| `src/synthesizer/factcheck.ts` | Pure deterministic fact-check, run against HEAD **before** any doc is written. `factCheck(proposal, repoRoot, docsDirs) → FactCheckResult` resolves every `cited_symbols` entry against `source_files`, every `referenced_paths` entry on disk, and every `source_files@<sha>` pin via `isValidSha`. `verificationFrom` projects the failures into the boolean `Verification` triple stored in frontmatter. A failed check writes a "needs human" note, never a doc. | `factCheck`, `verificationFrom`, `isUnderDocsDir` |
+| `src/synthesizer/index.ts` | Closed-loop orchestrator. `runSynthesize` composes `collectEnvelopes` → detect → diagnose → (per-unit) prose gate → `buildBundle` → `runBackend` → `extractProposal` → `assertNewDocProposal` → `factCheck` → write to `docs/_proposals/`. Top-N throttled by `synthesizer.top_n`; `--unit` bypasses the throttle (the demo path). Below-floor / non-prose causes collapse into one digest card (no backend call). Library owns fail-open; never rejects. | `runSynthesize`, `SynthesizeOptions`, `SynthesizeResult` |
+| `src/review.ts` | Curator-lite. `runReview` lists proposals under `docs/_proposals/` (parsed frontmatter — `cause`, `confidence`, `evidence_refs`, `verification`), and offers accept / reject. `acceptProposal` moves the artifact to its authoritative `Proposal.path` (validated under a configured `docs_dir`); `rejectProposal` deletes it. The `edit` action is **deferred** (needs `$EDITOR` → `child_process` outside the allowlist). `--json` lists without a TTY; `--yes` accepts non-interactively. | `runReview`, `listProposals`, `acceptProposal`, `rejectProposal` |
+| `src/explain.ts` | Routing-lite, fully stateless (no writes, no subprocess). `runExplain` composes detect + diagnose on the fly for one area, then prints cause + the pure `renderPointer` text + the doc body (if any) + "N prior sessions consulted `<doc>`" derived from the always-on `docs_read`. If no doc exists, points to a proposal or suggests `synthesize --unit <area>`. | `runExplain`, `ExplainOptions`, `ExplainResult` |
+| `src/router/pointer.ts` | Pure pointer renderer — the one shared leaf the future live `PreToolUse` hook will also call. `renderPointer({area, docPath?})` → a one-line "Before editing `<area>`, read `<doc>`." string (or a suggest-`synthesize` fallback). No I/O. | `renderPointer` |
 
 ## 3. Pipeline
 
-`runScan` (`src/pipeline.ts:66`) threads the stages together. Async because
-`streamSession` is async.
+`runScan` (`src/pipeline.ts:323`) threads the stages together. Async because
+`streamSession` is async. The I/O preamble (steps 2–6 below: walk → stream →
+resolve-main-repo → relativize → `--repo`/`--since`/`--limit` filter + the scoped
+`unresolvable_cwd` warning) now lives in `collectEnvelopes` (`src/pipeline.ts`),
+which returns `{ envelopes, warnings, filterRepo }`; `runScan`, `runSynthesize`,
+and `runExplain` all call it before detect → aggregate → diagnose → output
+(`runSynthesize` continues past diagnose into bundle → backend → fact-check →
+write; see the [closed-loop MVP spec §3](superpowers/specs/active/2026-07-24-mvp-closed-loop-design.md)
+for that pipeline).
 
-1. **Config** — `loadConfig(opts.configPath)` (`src/pipeline.ts:68`). `ConfigError`
+1. **Config** — `loadConfig(opts.configPath)` (`src/pipeline.ts:327`). `ConfigError`
    propagates to the CLI (non-zero exit); `runScan` never catches it.
 2. **Walk** — `resolveHarness(harnessId)` (`src/pipeline.ts`) runs once at the
    top of `runScan`: `harnessId = opts.harness ?? cfg.harness ?? 'claude-code'`
@@ -132,8 +158,10 @@ only adds persistence.
    `diagnoseUnits(records, cfg, outputRepo)` produces one `Diagnosis` per flagged
    area (empty `[]` when nothing is flagged or the repo root is unresolved).
    Skipped entirely by default, so `ScanResult.diagnoses` is **unset** (key
-   absent, not just `undefined`) and default output stays byte-identical to
-   Slice 3. See §11.
+   absent, not just `undefined`). The human leaderboard stays byte-identical to
+   Slice 3; `--json` differs only in that every session record always carries
+   `docs_read`/`docs_injected` (always-on closed-loop consumption fields). See
+   §11.
 10. **Output** — branch by `--calibrate` / `--json` / human. `mode` is read from
     the first record (or `'bootstrap'` when there are none); `outputRepo` is the
     filtered repo (or `''`).
@@ -321,18 +349,33 @@ explicitly v2.
 
 ## 8. Security & privacy model
 
-Five guarantees (spec §11), each pinned to its enforcing file.
+Five guarantees hold for the **default path** (`scan` / `reflect` / `explain`),
+each pinned to its enforcing file. The opt-in closed loop (`synthesize` /
+`review`) crosses the write + subprocess boundary — its egress is detailed at
+the end of this section.
 
-**No network.** No `fetch`/`http`/`https`/`net`/`undici` imports and no
-`fetch()` calls. `src/egress.ts` is the single source of truth:
-`FORBIDDEN_IMPORT` (`src/egress.ts:18`) matches static, side-effect, dynamic,
-and `require` imports of `http`/`https`/`net`/`undici`/`fetch` (the `node:`
-prefix optional); `FORBIDDEN_FETCH_CALL` (`src/egress.ts:27`) is
-`/\bfetch\s*\(/`, catching the global `fetch` (a Node global since 18, so no
-import is required to egress). Both err toward flagging (matches inside
-comments/strings too) — acceptable for a security control. Enforced by
-`test/egress.test.ts`, which scans every `src/**/*.ts` and asserts zero
-offenders.
+**No network (default path).** No `fetch`/`http`/`https`/`net`/`undici` imports
+and no `fetch()` calls anywhere in `src/` — including the synthesizer (it shells
+out via `child_process`; it does not import a network module). `src/egress.ts`
+is the single source of truth: `FORBIDDEN_IMPORT` (`src/egress.ts:18`) matches
+static, side-effect, dynamic, and `require` imports of
+`http`/`https`/`net`/`undici`/`fetch` (the `node:` prefix optional);
+`FORBIDDEN_FETCH_CALL` (`src/egress.ts:27`) is `/\bfetch\s*\(/`, catching the
+global `fetch` (a Node global since 18, so no import is required to egress).
+Both err toward flagging (matches inside comments/strings too) — acceptable for
+a security control. Enforced by `test/egress.test.ts`, which scans every
+`src/**/*.ts` and asserts zero offenders.
+
+**`child_process` confinement (default path is subprocess-free).**
+`CHILD_PROCESS_IMPORT` (column-0-anchored, so the indented `require` line
+`src/init/claude.ts` emits inside its wrapper template does not trip it) matches
+top-level `node:child_process` imports. `CHILD_PROCESS_ALLOWLIST` is exactly
+`src/synthesizer/**` (the opt-in `synthesize` backend subprocess) + `src/git.ts`
+(`isValidSha`, which shells out to `git cat-file` for the fact-check).
+`test/egress.test.ts` asserts no other `src/` file imports `child_process`. The
+no-subprocess guarantee is thus scoped to the default path; opt-in `synthesize`
+egress is bounded by `child_process` + the trusted agent CLI, not by a network
+import.
 
 **Pattern-catalog scrubbing (no entropy heuristic).** `src/adapter/scrub.ts`
 applies seven fixed rules in order (heredoc keys → env-vars → auth headers →
@@ -341,7 +384,9 @@ the literal sentinel `***REDACTED***`. High-entropy detection is deliberately
 not used — it produces false positives (commit SHAs, UUIDs, hashes corrupt
 `failure_streak`/`oscillation` command comparison) and false negatives. Applied
 to `input_digest.cmd`, `input_digest.query`, and `input_digest.files` inside
-`normalizeRecord`, before events enter the pipeline.
+`normalizeRecord`, before events enter the pipeline. The same catalog
+(`scrubContent`) scrubs repo file-heads before the synthesizer sends them to the
+backend.
 
 **No raw prose in any output path.** User/assistant text never enters the
 contract: `normalizeRecord` classifies correction shapes and emits only the
@@ -407,6 +452,37 @@ prefix-confinement check rejects any resolved path escaping
 Fail-open throughout: malformed JSON, oversized lines, unreadable dirs, and
 stream errors are skipped and counted, never thrown (`src/adapter/stream.ts:127`).
 
+### Opt-in closed loop — scope boundary
+
+`synthesize` and `review` are the first paths that **write to disk and shell
+out**. The scope-boundary invariant (closed-loop spec §4):
+
+- **Default `scan` / `reflect` / `explain`: unchanged** — stateless, no-network,
+  no-writes, no-subprocess. `explain` composes detect + diagnose on the fly but
+  touches neither boundary.
+- **`synthesize`** drafts proposals by shelling out to the agent's own
+  print-mode CLI (`claude -p` / `qwen -p` / `gigacode -p`) via
+  `src/synthesizer/backend.ts`. Network is **delegated to that trusted
+  subprocess** — harnessgap itself imports no network module and calls no
+  `fetch` (the egress gate still holds). The prompt carries **derived evidence
+  only** (the `Diagnosis` + unit signals/area key, no transcript prose) +
+  **repo file-heads** under the area prefix (size-capped by
+  `synthesizer.max_file_head_bytes`, scrubbed via `scrubContent`, governed by
+  `structure_only` — heads-only for the MVP, *not* the AST skeleton) + **doc
+  bodies** (size-capped) under `docs_dirs`. What comes back is a `Proposal`
+  (new-doc only) that is **fact-checked against HEAD** (`factCheck`) before
+  anything is written; a failed check writes a "needs human" note, never a doc.
+  Proposals land under `docs/_proposals/` — `synthesize` never auto-accepts
+  into `docs/`.
+- **`review`** is local-only (reads + moves/deletes files under
+  `docs/_proposals/` and `docs/`); no subprocess, no network.
+- **Byte-identity is relaxed only for `docs_read` / `docs_injected`** (always-on
+  on every session record — doc paths + a timestamp, derived-only; consumed by
+  `explain` and `--json`). The `evidence` / `diagnoses` opt-in
+  conditional-spread stays (uncalibrated Diagnoser inputs would noisy up the
+  default leaderboard). The human leaderboard snapshot is byte-identical to
+  Slice 3; `--json` differs only in the always-on consumption fields.
+
 ## 9. Testing strategy
 
 - **Unit tests on pure functions** — per-record parse (`test/parse.test.ts`),
@@ -417,10 +493,10 @@ stream errors are skipped and counted, never thrown (`src/adapter/stream.ts:127`
   (`test/config.test.ts`), git sandbox (`test/git.test.ts`), walk
   (`test/walk.test.ts`), stream/merge (`test/stream.test.ts`), output formatters
   (`test/output.test.ts`). All pure; TDD applies naturally.
-- **Corpus integration test** (`test/corpus.test.ts`) — 12 labeled fixtures run
+- **Corpus integration test** (`test/corpus.test.ts`) — 14 labeled fixtures run
   through the **real** pipeline (real filesystem, real git, real streaming,
   real detection — no mocking). Pass bar: `≥ 80%` of fixtures match their
-  `expected_flagged` label (`≥ 10` of 12). Also asserts each labeled session's
+  `expected_flagged` label (`≥ 12` of 14). Also asserts each labeled session's
   `expected_top_signals` are a subset of the flagged area's top signals. This
   is the regression proxy that would catch a signal-always-0 bug: a broken
   signal drops the match rate below the bar.
@@ -434,10 +510,12 @@ stream errors are skipped and counted, never thrown (`src/adapter/stream.ts:127`
   `yaml` via `npm ls --all --omit=dev --json` (run through `execFile`, no
   shell).
 - **Egress audit** (`test/egress.test.ts`) — scans every `src/**/*.ts` file for
-  forbidden network imports and `fetch()` calls using `src/egress.ts`. Also
-  locks the regex behavior against string fixtures (multi-line imports,
-  side-effect imports, dynamic imports, `require`, `undici`, and the
-  `WebFetch` vs `fetch` word-boundary distinction).
+  forbidden network imports and `fetch()` calls using `src/egress.ts`, and
+  asserts `child_process` is imported only in `src/synthesizer/**` + `src/git.ts`
+  (the default-path-only scope boundary). Also locks the regex behavior against
+  string fixtures (multi-line imports, side-effect imports, dynamic imports,
+  `require`, `undici`, the `WebFetch` vs `fetch` word-boundary distinction, and
+  the column-0 anchor that exempts `init`'s emitted wrapper `require`).
 - **Privacy + safety test** (`test/privacy.test.ts`) — five sections: (a)
   secret-shape fixtures through `streamSession` → `***REDACTED***` present and
   original secret absent from `--json`; (b) malformed-transcript prose absent
@@ -468,6 +546,18 @@ stream errors are skipped and counted, never thrown (`src/adapter/stream.ts:127`
   `test/diagnose.test.ts` (per-unit fail-open + deterministic sort); plus
   `test/snapshot.test.ts` (byte-identical default snapshot + an opt-in
   `--diagnose` snapshot) and the §9 privacy case (e) for `--diagnose`.
+- **Closed-loop tests** (Phase 2 MVP) — `test/proposal.test.ts` (the new-doc
+  `Proposal` schema validator); `test/factcheck.test.ts` (`factCheck` resolution
+  of `cited_symbols`/`referenced_paths`/`source_files@sha` + the `isValidSha`
+  git helper); `test/backend.test.ts` (per-harness `resolveBackend` + the
+  `extractProposal` envelope-unwrap adapters for claude/qwen/gigacode);
+  `test/bundle.test.ts` (evidence-bundle assembly + `scrubContent` on
+  file-heads); `test/synthesize.test.ts` (the `runSynthesize` orchestration:
+  prose gate, top-N throttle, fact-check-gated write, fail-open);
+  `test/review.test.ts` (list / accept-to-`Proposal.path` / reject);
+  `test/explain.test.ts` (the pure `renderPointer` + the consultation count);
+  and `test/synthesize-review.test.ts` (e2e synthesize → review). The egress
+  audit (above) scopes `child_process` to `src/synthesizer/**` + `src/git.ts`.
 
 ## 10. Session-end reflect (`reflect` + `init claude`, Slice 3)
 
@@ -560,8 +650,10 @@ Slice 4 adds **grounded cause attribution** as an opt-in pass **after** the
 detection core. The pipeline seam is deliberate: `runDetector`, `scoreSessions`,
 `localizeAreas`, `aggregateAreas`, `assembleStruggleRecord`, scrubbing, size
 caps, and `resolveMainRepo` are all reused verbatim. With `--diagnose` off,
-`StruggleRecord.evidence` is unset, `ScanResult.diagnoses` is unset, and the
-human / `--json` / `--calibrate` outputs are byte-identical to Slice 3.
+`StruggleRecord.evidence` is unset and `ScanResult.diagnoses` is unset. The
+human leaderboard and `--calibrate` output are byte-identical to Slice 3; `--json`
+differs only in the always-on `docs_read`/`docs_injected` fields on each session
+record (closed-loop consumption, derived-only).
 
 The pipeline seam (in `runScan`, `src/pipeline.ts`):
 
@@ -683,25 +775,33 @@ following symlinks (mirrors `src/walk.ts`).
 
 - [Spec (authoritative)](superpowers/specs/archive/2026-07-12-harnessgap-detection-slice-design.md) — §5 scoring, §11 privacy are the contract.
 - [Diagnoser spec (Slice 4)](superpowers/specs/active/2026-07-18-harnessgap-diagnoser-design.md) — §5 contracts, §6 cause taxonomy, §11 open questions.
+- [Closed-loop MVP spec](superpowers/specs/active/2026-07-24-mvp-closed-loop-design.md) — synthesize / review / explain; §3 pipeline, §4 scope boundary, §11 calibration accepted-risk.
+- [Calibration](CALIBRATION.md) — accepted-risk record (precision unvalidated; recall-substitute plan).
 - [Plan](superpowers/plans/archive/2026-07-12-harnessgap-detection-slice.md) — implementation plan.
 - [README](../README.md) — user-facing usage, flags, config defaults, privacy summary.
 - [Consumer guide](CONSUMER_GUIDE.md) — consumer-facing docs.
 
 ## TL;DR
 
-`harnessgap scan` is a stateless, offline, detection-only pipeline: **walk**
-`~/.claude/projects/*/*.jsonl` → **adapter** (scrub + parse + stream, merging
-`tool_use`+`tool_result` into one `tool_call` event so `tool` and `ok`
-co-occur) → **resolve main repo** (stat-walk to directory `.git`; no git
-invocation — unifies main + worktrees + deleted-worktree +
-sibling-worktree recovery) →
-**relativize** (repo-root prefix strip + worktree-prefix collapse, so areas are
-real code areas) → **detector** (7 pure signals + percentile-of-composites
-scoring with a bootstrap fallback for thin history + path-prefix area
-localization) → **aggregate** (integer session counts; percentile-rank
+The **default path** (`scan` / `reflect` / `explain`) is a stateless, offline,
+detection-only pipeline: **walk** `~/.claude/projects/*/*.jsonl` → **adapter**
+(scrub + parse + stream, merging `tool_use`+`tool_result` into one `tool_call`
+event so `tool` and `ok` co-occur) → **resolve main repo** (stat-walk to
+directory `.git`; no git invocation — unifies main + worktrees + deleted-worktree
++ sibling-worktree recovery) → **relativize** (repo-root prefix strip +
+worktree-prefix collapse, so areas are real code areas) → **detector** (7 pure
+signals + percentile-of-composites scoring with a bootstrap fallback for thin
+history + path-prefix area localization; always collects `docs_read`/
+`docs_injected`) → **aggregate** (integer session counts; percentile-rank
 top-signals) → **output** (human table — flagged areas only, aligned — /
-`--json` / `--calibrate`). No network, no disk writes, no raw prose in any
-output. Stat-based repo resolution, symlink rejection, and
-1 MB / 512 / 50 / 5000 / 50 MB size caps throughout. The normalized-event
-schema and pure detector are zero wasted work when
-ingest/diagnosis/routing land in later slices.
+`--json` / `--calibrate`). No network, no disk writes, no subprocess, no raw
+prose in any output. Stat-based repo resolution, symlink rejection, and
+1 MB / 512 / 50 / 5000 / 50 MB size caps throughout.
+
+The **opt-in closed loop** (`synthesize` → `review` → `explain`) composes the
+same detect + diagnose front-end, then shells out to the agent print-mode CLI
+(`child_process`, the only subprocess egress besides `git.ts`'s `isValidSha`) to
+draft a `Proposal` that is fact-checked against HEAD and written under
+`docs/_proposals/` for human review. The no-network / no-subprocess identity is
+scoped to the default path; opt-in `synthesize` egress is bounded by
+`child_process` + the trusted agent CLI (no network import anywhere in `src/`).

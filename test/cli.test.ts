@@ -247,6 +247,20 @@ describe('harnessgap CLI (spawn-based)', () => {
     expect(stdout).toContain('scan');
   });
 
+  it('6b. --help description reflects closed-loop reality (not stale "Stateless detection-only")', async () => {
+    // The CLI now ships `synthesize` (writes + shells out), so the old
+    // "Stateless detection-only" framing was false. The corrected description
+    // scopes statelessness to scan/reflect and names the closed-loop commands.
+    const { stdout, code } = await runCli(['--help']);
+
+    expect(code).toBe(0);
+    expect(stdout).toContain('Detect harness gaps in agent transcripts');
+    expect(stdout).toMatch(/scan\/reflect/);
+    expect(stdout).toMatch(/synthesize\/review/);
+    // The stale framing must not reappear.
+    expect(stdout).not.toContain('Stateless detection-only');
+  });
+
   // Slice 4 (Diagnoser) — Task 10 + Task 11: --diagnose flag is parsed and
   // threaded into runScan, and the JSON envelope carries a `diagnoses` array
   // (Task 11 wired JsonOutput.diagnoses into buildJsonEnvelope). Here we assert
@@ -302,5 +316,141 @@ describe('harnessgap CLI (spawn-based)', () => {
     expect(code).toBe(0);
     expect(stdout).toContain('--diagnose');
     expect(stdout).toContain('Classify each flagged area into a typed cause');
+  });
+});
+
+// Task 13: closed-loop command wiring (synthesize / review / explain).
+// Spawn-based, mirrors the scan tests above. --help asserts the option surface
+// for each new command; a dispatch test per command confirms opts route to the
+// right runner and the runner's `output` lands on stdout via the flush-callback
+// exit. The conflict case on explain re-asserts `validateHarnessFlags` is
+// reused by the harness-bearing commands.
+
+describe('harnessgap CLI closed-loop commands (Task 13)', () => {
+  it('10. synthesize --help → lists --unit, --harness, --harness-dir, --claude-dir, --yes, --config', async () => {
+    const { stdout, code } = await runCli(['synthesize', '--help']);
+
+    expect(code).toBe(0);
+    expect(stdout).toContain('--unit');
+    expect(stdout).toContain('--harness');
+    expect(stdout).toContain('--harness-dir');
+    expect(stdout).toContain('--claude-dir');
+    expect(stdout).toContain('--yes');
+    expect(stdout).toContain('--config');
+  });
+
+  it('11. review --help → lists --repo, --json, --yes, --config', async () => {
+    const { stdout, code } = await runCli(['review', '--help']);
+
+    expect(code).toBe(0);
+    expect(stdout).toContain('--repo');
+    expect(stdout).toContain('--json');
+    expect(stdout).toContain('--yes');
+    expect(stdout).toContain('--config');
+  });
+
+  it('12. explain --help → shows <area> positional + --repo, --harness, --harness-dir, --claude-dir, --config', async () => {
+    const { stdout, code } = await runCli(['explain', '--help']);
+
+    expect(code).toBe(0);
+    // Commander renders the required positional as `<area>` in usage + help.
+    expect(stdout).toContain('<area>');
+    expect(stdout).toContain('--repo');
+    expect(stdout).toContain('--harness');
+    expect(stdout).toContain('--harness-dir');
+    expect(stdout).toContain('--claude-dir');
+    expect(stdout).toContain('--config');
+  });
+
+  it('13. synthesize dispatch → routes opts to runSynthesize, summary on stdout, exit 0', async () => {
+    // Fixture: empty git repo + empty claudeDir → 0 sessions → 0 diagnoses.
+    // runSynthesize renders its summary "Synthesized 0 proposal(s)…" and the
+    // CLI writes result.output + '\n' via the flush callback. Asserting the
+    // summary reaches stdout proves the CLI threads opts into runSynthesize
+    // and uses the established write+exit path.
+    const repoDir = makeTempDir('cli-syn-repo');
+    execFileSync('git', ['init', repoDir], { stdio: 'ignore' });
+    const repo = realpathSync(repoDir);
+    const claudeDir = makeTempDir('cli-syn-claude');
+
+    const { stdout, stderr, code } = await runCli([
+      'synthesize',
+      '--repo',
+      repo,
+      '--claude-dir',
+      claudeDir,
+      '--yes',
+    ]);
+
+    expect(code).toBe(0);
+    expect(stderr).toBe('');
+    expect(stdout).toContain('Synthesized');
+  });
+
+  it('14. review dispatch → routes opts to runReview, list on stdout, exit 0', async () => {
+    // Fixture: repo with no docs/_proposals/ dir → runReview returns the empty
+    // list "No proposals pending review." Confirms the CLI routes opts into
+    // runReview and writes result.output on stdout.
+    const repoDir = makeTempDir('cli-rev-repo');
+    execFileSync('git', ['init', repoDir], { stdio: 'ignore' });
+    const repo = realpathSync(repoDir);
+
+    const { stdout, stderr, code } = await runCli(['review', '--repo', repo]);
+
+    expect(code).toBe(0);
+    expect(stderr).toBe('');
+    expect(stdout).toContain('No proposals pending review');
+  });
+
+  it('15. explain dispatch → routes <area> + opts to runExplain, diagnosis line on stdout, exit 0', async () => {
+    // Fixture: repo with no transcripts → no flagged areas → runExplain's null
+    // branch: "explain: no diagnosis for `<area>` (it is not a flagged area)."
+    // The unit key echoing back in the message is load-bearing — it proves the
+    // <area> positional reached runExplain as opts.unit (not dropped, not
+    // mis-named).
+    const repoDir = makeTempDir('cli-exp-repo');
+    execFileSync('git', ['init', repoDir], { stdio: 'ignore' });
+    const repo = realpathSync(repoDir);
+    const claudeDir = makeTempDir('cli-exp-claude');
+
+    const { stdout, stderr, code } = await runCli([
+      'explain',
+      'src/billing',
+      '--repo',
+      repo,
+      '--claude-dir',
+      claudeDir,
+    ]);
+
+    expect(code).toBe(0);
+    expect(stderr).toBe('');
+    expect(stdout).toContain('src/billing');
+    expect(stdout).toMatch(/no diagnosis|not a flagged area/);
+  });
+
+  it('16. explain --claude-dir X --harness qwen-code → conflict error, non-zero exit (validateHarnessFlags reused)', async () => {
+    // Regression guard: explain (a harness-bearing command) must reuse the
+    // same validateHarnessFlags conflict rule as scan/reflect. Combining the
+    // --claude-dir alias with a non-claude --harness is a hard error.
+    const repoDir = makeTempDir('cli-exp-conflict');
+    const claudeDir = makeTempDir('cli-exp-conflict-claude');
+
+    const { stdout, stderr, code } = await runCli([
+      'explain',
+      'src/anything',
+      '--repo',
+      repoDir,
+      '--claude-dir',
+      claudeDir,
+      '--harness',
+      'qwen-code',
+    ]);
+
+    expect(code).not.toBe(0);
+    // No explain output leaked before the conflict is surfaced.
+    expect(stdout).toBe('');
+    expect(stderr).toMatch(/conflict/i);
+    expect(stderr).toMatch(/--claude-dir/);
+    expect(stderr).toMatch(/--harness/);
   });
 });

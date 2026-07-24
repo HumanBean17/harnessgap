@@ -1,20 +1,24 @@
 # harnessgap — Consumer Guide
 
-A stateless, detection-only CLI that reads agent transcript logs — **Claude
-Code** (the default), **Qwen Code**, and **GigaCode** — and produces a
-**struggle leaderboard** — the areas of a repo where sessions show
-deterministic signals of friction (rereads, failure streaks, oscillating
-edits, abandonment, and more).
+A CLI that reads agent transcript logs — **Claude Code** (the default), **Qwen
+Code**, and **GigaCode** — and produces a **struggle leaderboard** — the areas
+of a repo where sessions show deterministic signals of friction (rereads,
+failure streaks, oscillating edits, abandonment, and more). It can also close
+the loop on the top friction areas by synthesizing a fact-checked doc proposal,
+reviewing it, and routing future sessions to the right doc.
 
-The **default `scan` path is detection-only**: it **writes nothing, installs
-nothing, persists nothing** — it reads transcripts (under `~/.claude/projects/`
-by default; `--harness <id>` selects Qwen Code or GigaCode) and prints a
-leaderboard to stdout. Cause attribution is available as an opt-in via
-`scan --diagnose` (Slice 4); synthesis, routing, and measurement are deferred
-to later slices.
+The **default `scan` path is stateless and detection-only**: it **writes
+nothing, installs nothing, persists nothing**, hits no network, and never shells
+out — it reads transcripts (under `~/.claude/projects/` by default; `--harness
+<id>` selects Qwen Code or GigaCode) and prints a leaderboard to stdout. Cause
+attribution is available as an opt-in via `scan --diagnose`. The opt-in **closed
+loop** (`synthesize` / `review`) crosses the write + subprocess boundary;
+`explain` is stateless and local-only — see
+[Closed loop](#closed-loop-synthesize--review--explain) below.
 
 For a one-page summary see [README.md](../README.md). For internals see
-[ARCHITECTURE.md](ARCHITECTURE.md).
+[ARCHITECTURE.md](ARCHITECTURE.md). For calibration honesty (precision is
+unvalidated) see [CALIBRATION.md](CALIBRATION.md).
 
 ---
 
@@ -117,8 +121,8 @@ harnessgap scan --limit 50
 ## Configuration (`.harnessgap.yml`)
 
 Optional. `scan` runs with built-in defaults if no file is present. The file is a
-YAML object with five top-level keys — `harness`, `detector`, `areas`,
-`docs_dirs`, and `diagnose`. Anything else is **rejected**. Values are
+YAML object with six top-level keys — `harness`, `detector`, `areas`,
+`docs_dirs`, `diagnose`, and `synthesizer`. Anything else is **rejected**. Values are
 deep-merged over the defaults (arrays replace, they do not concatenate).
 
 ```yaml
@@ -172,7 +176,7 @@ diagnose:                            # cause-rule floors (Slice 4); v1 priors, c
   score_floor: 70                    # mean-score bar for the inherent-complexity residual
 ```
 
-Keys not shown here (`synthesizer`, `router`, `tasks`, `repo`) are **not**
+Keys not shown here (`router`, `tasks`, `repo`) are **not**
 shipped and will be rejected.
 
 ---
@@ -428,8 +432,11 @@ grounded in the area's signal profile, whether a doc already exists under
 `docs_dirs`, and an opt-in evidence projection (failed-exec counts by cmd-class
 + edited-file counts by file-class). It is a pure rule engine — no LLM, no
 network, no git. It runs **only** under `--diagnose`; with the flag off, the
-table has no `CAUSE` column, `--json` has no `diagnoses` field, and output is
-byte-identical to Slice 3.
+table has no `CAUSE` column and `--json` has no `diagnoses` field. The human
+leaderboard is byte-identical to Slice 3 when `--diagnose` is off; `--json`
+differs only in that every session record now always carries `docs_read` /
+`docs_injected` (always-on closed-loop consumption fields — doc paths + a
+timestamp, derived-only).
 
 ### What each cause means (plain terms)
 
@@ -482,13 +489,21 @@ or file bodies appear (same privacy contract as the rest of the output).
 Two new top-level keys (both optional, both with defaults):
 
 ```yaml
-docs_dirs: [docs]                    # repo-relative dirs searched for doc-existence grounding
+docs_dirs: [docs]                    # repo-relative dirs searched for doc-existence grounding + doc-read scoping
 diagnose:                            # cause-rule floors (v1 priors)
   confidence_floor: 0.5              # min score for a specific cause to win
+  confidence_floor_for_prose: 0.6    # closed loop: below this, doc/config-doc → digest card, no prose
   config_share_floor: 0.5            # config-doc: config-failures / total-failures bar
   test_share_floor: 0.5              # test-gap: test-file-edits / total-edits bar
   code_share_floor: 0.5              # refactor-flag: code-file-edits / total-edits bar
   score_floor: 70                    # inherent-complexity: mean-score bar
+synthesizer:                         # closed-loop MVP (opt-in synthesize/review/explain)
+  backend: null                      # null → per-harness default (claude -p / qwen -p / gigacode -p)
+  model: null                        # optional model override passed through to the backend
+  structure_only: false              # heads-only file-heads for MVP (NOT the AST skeleton — see spec §5.5)
+  max_file_head_bytes: 4096          # cap on each repo file-head sent to the backend
+  dedupe: none                       # none | tfidf (MVP ships none; field is the stable seam)
+  top_n: 3                           # cap doc/config-doc areas synthesized per run
 ```
 
 - **`docs_dirs`** — list of repo-relative directories searched for doc-existence.
@@ -522,15 +537,132 @@ diagnose:                            # cause-rule floors (v1 priors)
 
 ---
 
+## Closed loop (`synthesize` / `review` / `explain`)
+
+The opt-in closed loop turns a flagged area into a reviewed doc proposal and
+routes future sessions to the right doc. These commands **cross the write +
+subprocess boundary** — unlike `scan` / `reflect` / `explain`, `synthesize` and
+`review` are not part of the stateless default path. `explain` is local-only
+(stateless: no writes, no subprocess).
+
+```
+harnessgap scan --diagnose                 # detect → diagnose (find doc/config-doc areas)
+harnessgap synthesize --unit src/billing   # draft a fact-checked new-doc proposal
+harnessgap review                          # accept (→ docs/…) or reject the proposal
+harnessgap explain src/billing             # routing pointer + doc body + consultation count
+```
+
+### `synthesize`
+
+```
+harnessgap synthesize --repo <path> --unit <area> [--harness <id>] [--yes] [--config <path>]
+```
+
+Composes detect → diagnose → synthesize. **Prose-gated:** only
+`cause ∈ {doc, config-doc}` at or above `diagnose.confidence_floor_for_prose`
+(default 0.6) produces a doc; everything else collapses into one digest entry
+(`docs/_proposals/_digest.md`) and makes no backend call. The drafted `Proposal`
+is **fact-checked against HEAD before it is written** — cited symbols resolve,
+referenced paths resolve, and every `source_files@<sha>` pins a real commit. A
+failed check writes a "needs human" note, never a doc. Proposals land under
+`docs/_proposals/`; `synthesize` never auto-accepts into `docs/`. New-doc only
+(the `edit-proposal` variant is deferred). Top-N throttled by
+`synthesizer.top_n` (default 3) when `--unit` is omitted.
+
+| Flag | Default | Description |
+| --- | --- | --- |
+| `--repo <path>` | main repo of the cwd | Target repo toplevel. |
+| `--unit <key>` | top-N by cause | Synthesize one area by key (the demo path; bypasses the top-N throttle). |
+| `--harness <id>` | `claude-code` | Harness backend whose print-mode CLI drafts the proposal. |
+| `--harness-dir <path>` | per `--harness` | Harness config directory (contains `projects/`). |
+| `--yes` | off | Acknowledge any pre-write confirmation prompt (the library writes when invoked). |
+| `--config <path>` | `.harnessgap.yml` in cwd | Path to a config file. |
+
+### `review`
+
+```
+harnessgap review [--repo <path>] [--json] [--yes]
+```
+
+Lists pending proposals in `docs/_proposals/` and offers **accept / reject**.
+(The `edit` action is **deferred** — it needs `$EDITOR`, a `child_process`
+outside the egress allowlist; the interim substitute is to open the proposal
+path in your editor manually.) `review` surfaces the diagnosed `cause` +
+`confidence` + the `evidence_refs` array + the fact-check `verification` from
+frontmatter, so you sanity-check the *rationale*, not just the label.
+**accept** moves the artifact to its authoritative `Proposal.path` (validated to
+be under a configured `docs_dir`); **reject** deletes it.
+
+| Flag | Default | Description |
+| --- | --- | --- |
+| `--repo <path>` | main repo of the cwd | Target repo toplevel. |
+| `--json` | off | Emit the parsed proposal frontmatter array as JSON (no TTY prompt). |
+| `--yes` | off | Accept every proposal non-interactively (move each to its frontmatter path). |
+
+### `explain <area>`
+
+```
+harnessgap explain <area> [--repo <path>] [--harness <id>]
+```
+
+Routing-lite, **fully stateless** (no writes, no subprocess, no cache). Prints
+the diagnosed **cause** + a one-line **pointer** (*"Before editing
+`src/billing/`, read `docs/architecture/billing.md`."*) + the relevant **doc
+body** if one exists + **"N prior sessions consulted `docs/…`"** (derived from
+the always-on `docs_read` field — the measurement signal's demo surface). If no
+doc exists, points to any proposal in `docs/_proposals/` or suggests
+`synthesize --unit <area>`. The pointer text is produced by a pure function
+(`src/router/pointer.ts`) — the seam the future live hook will also call.
+
+### Honest caveats (read before trusting a synthesized proposal)
+
+- **Wrong-cause prose.** The fact-check catches *factually-wrong* docs, not
+  *wrong-cause* docs, and the Diagnoser is uncalibrated. Misclassifying a
+  `refactor-flag` area as `doc` yields plausible prose that passes every gate.
+  Use `--unit` to select areas you have verified, and treat low-confidence /
+  thin-evidence proposals with extra skepticism.
+- **Heads-only is less private than a skeleton.** `structure_only: false`
+  (the MVP default) sends real (capped) source file-heads to the backend, not an
+  AST skeleton. The v2 AST skeleton lands behind the same flag.
+- **Precision unvalidated.** Detection + diagnosis precision is dogfood, not a
+  promise — see [CALIBRATION.md](CALIBRATION.md).
+
+---
+
 ## Privacy
 
-harnessgap runs offline on private transcripts. Five guarantees:
+The **default path** (`scan` / `reflect` / `explain`) runs offline on private
+transcripts — five guarantees hold for it. The **opt-in closed loop**
+(`synthesize` / `review`) crosses the write + subprocess boundary; its egress is
+described after the list.
 
-1. **No network.** No `fetch` / `http` / `https` / `net` / `undici` imports and no `fetch()` calls anywhere in `src/`. Transcripts never leave the machine. Enforced by `test/egress.test.ts`.
-2. **No disk writes (detection path).** `scan` and `reflect` write nothing to disk — they read transcripts and print to stdout. (`harnessgap init claude` is the one exception: an explicit opt-in installer that writes the Stop-hook wrapper, a `settings.json` merge, and the `/reflect` command under `.claude/`.) (OS-level page cache/swap are out of scope and common to any process that reads files.)
-3. **Pattern-catalog scrubbing.** Secrets are scrubbed in the adapter, before events enter the pipeline, using a fixed pattern catalog (API keys, bearer tokens, private keys, URL-embedded credentials, credential-file paths, known-format tokens). No entropy heuristic — nothing is guessed.
-4. **No raw prose in output.** Only derived signal values, scores, counts, paths, and integer warning counts are emitted. Raw message text, commands, and transcript line content never appear in any output path (human table, `--json`, `--calibrate`, warnings).
+1. **No network (default path).** No `fetch` / `http` / `https` / `net` / `undici` imports and no `fetch()` calls anywhere in `src/`. Transcripts never leave the machine. Enforced by `test/egress.test.ts`.
+2. **No disk writes (default path).** `scan`, `reflect`, and `explain` write nothing to disk — they read transcripts and print to stdout. (`harnessgap init` is the one exception: an explicit opt-in installer that writes the Stop-hook wrapper, a `settings.json` merge, and the `/reflect` command under the harness dir.) `synthesize` and `review` are opt-in writes (proposals under `docs/_proposals/`, accepted docs into `docs/`) that run only when you ask. (OS-level page cache/swap are out of scope and common to any process that reads files.)
+3. **Pattern-catalog scrubbing.** Secrets are scrubbed in the adapter, before events enter the pipeline, using a fixed pattern catalog (API keys, bearer tokens, private keys, URL-embedded credentials, credential-file paths, known-format tokens). No entropy heuristic — nothing is guessed. The same catalog scrubs repo file-heads before the synthesizer sends them to the backend.
+4. **No raw transcript prose in output.** Only derived signal values, scores, counts, paths, and integer warning counts are emitted. Raw message text, commands, and transcript line content never appear in any output path (human table, `--json`, `--calibrate`, warnings).
 5. **Stat-based repo resolution (no git invocation).** The repo for each session is found by walking up from its cwd and `stat`-ing `<ancestor>/.git` — no `git` process is spawned at all (so nothing lands in shell history, and the earlier sandbox/env-var concerns are moot). Worktree checkouts (`.git` file) resolve up to the main repo (`.git` directory), so a project's main checkout and all worktrees aggregate together; sessions whose cwd was a since-deleted worktree are recovered the same way. Sibling worktrees — a session whose cwd lived in a worktree checked out beside, not nested under, the main repo (the layout `git worktree add …` produces for a sibling clone) — are recovered by scanning candidate siblings' `.git/worktrees/<name>/gitdir` registrations; still only `stat` / `readdir` / tiny text-file reads, no naming-convention heuristic. The recovered checkout root relativizes those sessions' file paths, so sibling-worktree sessions aggregate under the same areas as the main checkout. Symlinks in transcript directories are rejected via `lstat`.
+
+### Opt-in closed loop — what leaves the machine, and how
+
+`synthesize` drafts proposals by shelling out to the agent's own print-mode CLI
+(`claude -p` / `qwen -p` / `gigacode -p`). Network is **delegated to that trusted
+subprocess** — harnessgap itself still imports no network module and calls no
+`fetch` (the egress gate still holds). The prompt the subprocess receives
+carries:
+
+- **Derived evidence only** — the `Diagnosis` (cause, confidence, rationale,
+  `evidence_refs`) and the unit's signal values + area key. No transcript prose.
+- **Repo file-heads** under the area prefix — size-capped
+  (`synthesizer.max_file_head_bytes`, default 4096), scrubbed via the same
+  pattern catalog, governed by `synthesizer.structure_only` (heads-only for the
+  MVP — *not* the AST skeleton; that is the v2 upgrade behind the same flag).
+- **Doc bodies** (size-capped) under `docs_dirs`, sent regardless of
+  `structure_only`.
+
+What comes back is a `Proposal` (new-doc only) that is **fact-checked against
+HEAD** before anything is written; a failed check writes a "needs human" note,
+never a doc. `review` and `explain` are local-only. `docs_read` / `docs_injected`
+on each session record carry only doc paths + a timestamp (derived-only).
 
 ---
 
@@ -545,7 +677,10 @@ Dev dependencies (`typescript`, `vitest`, `tsx`, `@types/node`) are never shippe
 and excluded from the published `files` set (`["dist"]`). The audit is locked by
 `test/packaging.test.ts` (asserts runtime deps are exactly `commander` + `yaml`)
 and `test/egress.test.ts` (no `src/` file imports a network module or calls
-`fetch()`).
+`fetch()`; and `child_process` is confined to `src/synthesizer/**` +
+`src/git.ts`). The no-network / no-subprocess guarantee is scoped to the
+**default path**; opt-in `synthesize` egress is bounded by `child_process` + the
+trusted agent CLI.
 
 ---
 
@@ -617,6 +752,8 @@ catalog-only change.
 
 - [README.md](../README.md) — one-page summary (install, flags, config, privacy).
 - [ARCHITECTURE.md](ARCHITECTURE.md) — module map, pipeline, normalized event schema, scoring, security model.
+- [CALIBRATION.md](CALIBRATION.md) — accepted-risk record (precision unvalidated; recall-substitute plan).
 - [Design spec](superpowers/specs/archive/2026-07-12-harnessgap-detection-slice-design.md)
 - [Diagnoser spec (Slice 4)](superpowers/specs/active/2026-07-18-harnessgap-diagnoser-design.md)
+- [Closed-loop MVP spec](superpowers/specs/active/2026-07-24-mvp-closed-loop-design.md) — synthesize / review / explain.
 - [Implementation plan](superpowers/plans/archive/2026-07-12-harnessgap-detection-slice.md)

@@ -28,6 +28,9 @@ import { Command } from 'commander';
 import { readFileSync } from 'node:fs';
 import process from 'node:process';
 import { runScan, type ScanOptions, runReflect, type ReflectOptions } from './pipeline.js';
+import { runSynthesize, type SynthesizeOptions } from './synthesizer/index.js';
+import { runReview, type ReviewOptions } from './review.js';
+import { runExplain, type ExplainOptions } from './explain.js';
 import { ConfigError, loadConfig } from './config.js';
 import { resolveHarness } from './adapter/index.js';
 import type { HarnessId, InitResult } from './types.js';
@@ -75,6 +78,34 @@ interface ReflectOpts {
   excludeSession?: string;
   stopHookActive?: boolean;
   format?: 'json' | 'hook-stop';
+  config?: string;
+  claudeDir?: string;
+  harness?: string;
+  harnessDir?: string;
+}
+
+/** The parsed option shape commander hands to the synthesize action. */
+interface SynthesizeOpts {
+  repo?: string;
+  unit?: string;
+  config?: string;
+  claudeDir?: string;
+  harness?: string;
+  harnessDir?: string;
+  yes?: boolean;
+}
+
+/** The parsed option shape commander hands to the review action. */
+interface ReviewOpts {
+  repo?: string;
+  config?: string;
+  json?: boolean;
+  yes?: boolean;
+}
+
+/** The parsed option shape commander hands to the explain action. */
+interface ExplainOpts {
+  repo?: string;
   config?: string;
   claudeDir?: string;
   harness?: string;
@@ -187,7 +218,9 @@ const program = new Command();
 
 program
   .name('harnessgap')
-  .description('Stateless detection-only CLI for harness gaps')
+  .description(
+    'Detect harness gaps in agent transcripts (scan/reflect are stateless; synthesize/review close the loop)',
+  )
   .version(pkg.version);
 
 program
@@ -334,6 +367,146 @@ program
     } catch (e) {
       // Only arg/config errors throw (runReflect fails open otherwise); surface
       // by message only — never the stack.
+      const msg = e instanceof Error ? e.message : String(e);
+      process.stderr.write(`error: ${msg}\n`, () => process.exit(1));
+    }
+  });
+
+// Closed-loop MVP Task 13: synthesize / review / explain commands. Each
+// mirrors the scan/reflect structure — load config, resolve harness flags via
+// the shared `validateHarnessFlags` (synthesize + explain are harness-bearing;
+// review is repo-only), call the runner, write `result.output + '\n'` and exit
+// in the flush callback so piped stdout is never truncated. Errors surface via
+// the same `error: <msg>` + exit-1 catch. The library runners own fail-open
+// (runSynthesize / runReview / runExplain never reject), so this catch mainly
+// handles ConfigError thrown by loadConfig + the validateHarnessFlags conflict
+// rule + any latent throw from commander parsing.
+
+program
+  .command('synthesize')
+  .description('Synthesize new-doc proposals from flagged areas (closed-loop MVP)')
+  .option('--repo <path>', 'target repo toplevel')
+  .option('--unit <key>', 'synthesize one area by key (bypasses the prose gate)')
+  .option('--config <path>', 'path to a .harnessgap.yml config file')
+  .option(
+    '--harness <id>',
+    'harness backend to scan (claude-code | qwen-code | gigacode)',
+    undefined,
+  )
+  .option('--harness-dir <path>', 'harness config directory (contains projects/)')
+  .option(
+    '--claude-dir <path>',
+    '[deprecated alias for --harness claude-code --harness-dir <path>] Claude Code config directory',
+  )
+  .option(
+    '--yes',
+    'acknowledge any pre-write confirmation prompt (the library always writes when invoked)',
+  )
+  .action(async (opts: SynthesizeOpts) => {
+    try {
+      // Load config early to surface ConfigError via the standard catch (the
+      // library re-loads the same path; the duplicate read is bounded).
+      loadConfig(opts.config);
+      // Reuse the shared flag validator (same path as reflect): enforces the
+      // --claude-dir conflict rule + the closed HarnessId set. Harness
+      // resolution precedence (flag → config → 'claude-code') lives inside
+      // runSynthesize itself — passing `undefined` when no flag was set lets
+      // the library apply that precedence.
+      const { harness, harnessDir } = validateHarnessFlags(
+        opts.harness,
+        opts.harnessDir,
+        opts.claudeDir,
+      );
+
+      const synOpts: SynthesizeOptions = {
+        repo: opts.repo,
+        unit: opts.unit,
+        configPath: opts.config,
+        claudeDir: opts.claudeDir ?? opts.harnessDir,
+        harness,
+        harnessDir,
+        yes: opts.yes,
+      };
+      const result = await runSynthesize(synOpts);
+      process.stdout.write(result.output + '\n', () =>
+        process.exit(result.exitCode),
+      );
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      process.stderr.write(`error: ${msg}\n`, () => process.exit(1));
+    }
+  });
+
+program
+  .command('review')
+  .description('Review synthesized proposals under docs/_proposals/ (list / accept / reject)')
+  .option('--repo <path>', 'target repo toplevel')
+  .option('--config <path>', 'path to a .harnessgap.yml config file')
+  .option('--json', 'emit the parsed proposal frontmatter array as JSON')
+  .option('--yes', 'accept every proposal non-interactively (move each to its frontmatter path)')
+  .action(async (opts: ReviewOpts) => {
+    try {
+      // No harness flags on review — it reads repo-local state only. loadConfig
+      // is still called early so a bogus --config fails here via the standard
+      // catch (runReview re-loads the same path; bounded duplicate read).
+      loadConfig(opts.config);
+
+      const reviewOpts: ReviewOptions = {
+        repo: opts.repo,
+        configPath: opts.config,
+        json: opts.json,
+        yes: opts.yes,
+      };
+      const result = await runReview(reviewOpts);
+      process.stdout.write(result.output + '\n', () =>
+        process.exit(result.exitCode),
+      );
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      process.stderr.write(`error: ${msg}\n`, () => process.exit(1));
+    }
+  });
+
+program
+  .command('explain <area>')
+  .description('Explain one flagged area: cause header, routing pointer, doc body, consultation count')
+  .option('--repo <path>', 'target repo toplevel')
+  .option('--config <path>', 'path to a .harnessgap.yml config file')
+  .option(
+    '--harness <id>',
+    'harness backend to scan (claude-code | qwen-code | gigacode)',
+    undefined,
+  )
+  .option('--harness-dir <path>', 'harness config directory (contains projects/)')
+  .option(
+    '--claude-dir <path>',
+    '[deprecated alias for --harness claude-code --harness-dir <path>] Claude Code config directory',
+  )
+  .action(async (area: string, opts: ExplainOpts) => {
+    try {
+      // Load config + validate harness flags up front so user errors (bogus
+      // --config, --claude-dir/--harness conflict) surface here with the same
+      // stderr+exit-1 path as scan, before the runner does its (bounded) work.
+      loadConfig(opts.config);
+      const { harness, harnessDir } = validateHarnessFlags(
+        opts.harness,
+        opts.harnessDir,
+        opts.claudeDir,
+      );
+
+      const explainOpts: ExplainOptions = {
+        unit: area,
+        repo: opts.repo,
+        configPath: opts.config,
+        claudeDir: opts.claudeDir ?? opts.harnessDir,
+        harness,
+        harnessDir,
+      };
+      const result = await runExplain(explainOpts);
+      process.stdout.write(result.output + '\n', () =>
+        process.exit(result.exitCode),
+      );
+    } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       process.stderr.write(`error: ${msg}\n`, () => process.exit(1));
     }

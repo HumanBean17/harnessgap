@@ -127,25 +127,60 @@ export interface ScanResult {
 }
 
 /**
- * Orchestrate the full harnessgap scan. Async (awaits streamSession +
- * resolveToplevel). Returns the output string, mode, session count, aggregated
- * warnings, and exitCode (always 0 — misconfig throws propagate to the CLI).
+ * Options for {@link collectEnvelopes}. `harness` is the resolved harness id
+ * (the CALLER resolves the --harness flag → config → 'claude-code' precedence;
+ * this helper does not load config, so it cannot fall back itself). `configPath`
+ * is accepted for opts-bag symmetry with {@link ScanOptions} but is NOT loaded
+ * here — config owns the harness fallback + detector/calibrate params, none of
+ * which this I/O preamble needs; the caller loads cfg for its own
+ * detect/aggregate/diagnose steps.
  */
-export async function runScan(opts: ScanOptions): Promise<ScanResult> {
-  // 1. Load config (ConfigError propagates — not caught here).
-  const cfg = loadConfig(opts.configPath);
+export interface CollectEnvelopesOptions {
+  repo?: string;
+  since?: string;
+  limit?: number;
+  harness: HarnessId;
+  harnessDir?: string;
+  claudeDir?: string;
+  configPath?: string;
+}
 
-  // 1b. Resolve the harness spec ONCE at the top — flag wins, else config
-  //     (Task 8; defaults to 'claude-code' via DEFAULT_CONFIG), else the
-  //     'claude-code' literal belt-and-suspenders (cfg.harness is typed as a
-  //     required field but the belt keeps the contract if a future schema
-  //     change makes it optional). The spec carries streamSession + layout
-  //     so discovery and streaming both route through it. `cwd` is also
-  //     surfaced on StreamResult but stays unused here (the pipeline resolves
-  //     repos from the full `cwds` list so a since-deleted representative cwd
-  //     does not lose the session).
-  const harnessId: HarnessId = opts.harness ?? cfg.harness ?? 'claude-code';
-  const spec = resolveHarness(harnessId);
+/** Result of {@link collectEnvelopes}: the filtered envelopes + warnings + repo. */
+export interface CollectedEnvelopes {
+  envelopes: NormalizedEnvelope[];
+  warnings: Warnings;
+  filterRepo: string;
+}
+
+/**
+ * The shared I/O preamble split out of {@link runScan} (Task 3) so the upcoming
+ * synthesize/explain entry points (Tasks 10/11) can obtain
+ * {@link NormalizedEnvelope}[] + {@link Warnings} + the resolved output repo
+ * without runScan's output formatting. Performs, in order:
+ *
+ *   - resolve the harness spec from the caller-supplied id;
+ *   - discover transcripts via the spec (walk);
+ *   - stream each file, resolve its main repo, relativize file paths;
+ *   - resolve the filter repo (opts.repo, else process.cwd()'s main repo) and
+ *     throw `ConfigError` on a bogus explicit `--repo` (issue #29 — never falls
+ *     through to a machine-wide scan);
+ *   - compute the scoped `unresolvable_cwd` warning (issue #31);
+ *   - filter by repo, then `--since`, then `--limit` (limit applied LAST).
+ *
+ * Async (awaits streamSession). Re-throws `ConfigError` for a bogus `--repo` and
+ * for an unparseable `--since` (parseDuration). Returns the filtered envelopes
+ * (post-limit), the warnings, and the resolved `filterRepo` ("" for the
+ * machine-wide fallthrough).
+ */
+export async function collectEnvelopes(
+  opts: CollectEnvelopesOptions,
+): Promise<CollectedEnvelopes> {
+  // 1. Resolve the harness spec from the caller-resolved id. The spec carries
+  //    streamSession + layout so discovery and streaming both route through it.
+  //    `cwd` is also surfaced on StreamResult but stays unused here (the
+  //    pipeline resolves repos from the full `cwds` list so a since-deleted
+  //    representative cwd does not lose the session).
+  const spec = resolveHarness(opts.harness);
 
   // 2. Discover transcripts via the spec — rootOverride is the unified dir
   //    resolution (harnessDir from --harness-dir, else the legacy claudeDir
@@ -276,6 +311,45 @@ export async function runScan(opts: ScanOptions): Promise<ScanResult> {
   if (opts.limit !== undefined && opts.limit >= 0) {
     filtered = filtered.slice(0, opts.limit);
   }
+
+  return { envelopes: filtered, warnings, filterRepo };
+}
+
+/**
+ * Orchestrate the full harnessgap scan. Async (awaits streamSession +
+ * resolveToplevel). Returns the output string, mode, session count, aggregated
+ * warnings, and exitCode (always 0 — misconfig throws propagate to the CLI).
+ */
+export async function runScan(opts: ScanOptions): Promise<ScanResult> {
+  // 1. Load config (ConfigError propagates — not caught here). Loaded BEFORE
+  //    collectEnvelopes so the harness fallback (cfg.harness) and every later
+  //    detect/aggregate/diagnose/output step share one cfg instance.
+  const cfg = loadConfig(opts.configPath);
+
+  // 1b. Resolve the harness id (flag → config → 'claude-code') here and pass it
+  //     DOWN to collectEnvelopes. Harness spec resolution no longer lives in
+  //     the I/O preamble: the helper takes a resolved HarnessId so
+  //     synthesize/explain (Tasks 10/11) can call it with the same precedence
+  //     without re-loading cfg just to pick a spec. The 'claude-code' literal
+  //     is belt-and-suspenders (cfg.harness is always set via DEFAULT_CONFIG).
+  const harnessId: HarnessId = opts.harness ?? cfg.harness ?? 'claude-code';
+
+  // 2–5. I/O preamble (shared with synthesize/explain): discover transcripts →
+  //      stream → resolve-main-repo → relativize → filter (--repo / --since /
+  //      --limit) → scoped `unresolvable_cwd` warning. The bogus-`--repo`
+  //      ConfigError (issue #29) and the `--since` parseDuration ConfigError are
+  //      re-thrown out of collectEnvelopes. `filterRepo` is the resolved output
+  //      repo (opts.repo, the resolved process.cwd() repo, or "" if neither
+  //      resolves — the machine-wide fallthrough).
+  const { envelopes: filtered, warnings, filterRepo } = await collectEnvelopes({
+    repo: opts.repo,
+    since: opts.since,
+    limit: opts.limit,
+    harness: harnessId,
+    harnessDir: opts.harnessDir,
+    claudeDir: opts.claudeDir,
+    configPath: opts.configPath,
+  });
 
   // 6. Run detector. Thread `collectEvidence` ONLY under --diagnose so the
   //    default path skips evidence work entirely (keeps StruggleRecord.evidence
@@ -727,6 +801,10 @@ function degenerateRecord(envelope: NormalizedEnvelope): StruggleRecord {
       oscillation: 0,
       wall_clock_per_line_ms: null,
     },
+    // Closed-loop MVP: always-on doc-read/doc-injection rollups. The
+    // degenerate fail-open record has no detection run, so both are empty.
+    docs_read: [],
+    docs_injected: [],
   };
 }
 

@@ -76,6 +76,11 @@ describe('assembleStruggleRecord — evidence projection', () => {
       ZERO_SIGNALS,
       { score_pct: 0, mode: 'bootstrap', flagged: false, composite: 0 },
       [],
+      // Closed-loop MVP: docs_read/docs_injected now sit between `areas` and
+      // `evidence` on assembleStruggleRecord's signature. Both required; pass
+      // empty arrays here (this unit test is about evidence projection).
+      [],
+      [],
       SAMPLE_EVIDENCE,
     );
     expect(record.evidence).toStrictEqual(SAMPLE_EVIDENCE);
@@ -87,6 +92,8 @@ describe('assembleStruggleRecord — evidence projection', () => {
       env,
       ZERO_SIGNALS,
       { score_pct: 0, mode: 'bootstrap', flagged: false, composite: 0 },
+      [],
+      [],
       [],
     );
     expect(record.evidence).toBeUndefined();

@@ -83,6 +83,25 @@ export const DEFAULT_CONFIG: Config = {
     test_share_floor: 0.5,
     code_share_floor: 0.5,
     score_floor: 70,
+    // Closed-loop MVP: pinned to 0.6 by the plan (§5.2/§9) — below this
+    // confidence, doc/config-doc causes downgrade to a digest card with no
+    // prose. Range check (∈ [0,1]) is enforced in `validateConfig`.
+    confidence_floor_for_prose: 0.6,
+  },
+  // Closed-loop MVP (Synthesizer) defaults, pinned verbatim by the plan.
+  // `backend`/`model` are null so the default path makes no external call
+  // (structure-only / no network); `dedupe:'none'` skips near-duplicate
+  // search; `top_n:3` caps the areas synthesized per run. Range/enum checks
+  // (dedupe ∈ {none,tfidf}, max_file_head_bytes >= 1, top_n >= 1, backend is
+  // string|null) are enforced in `validateConfig`; `'synthesizer'` is in
+  // `KNOWN_TOP_KEYS`.
+  synthesizer: {
+    backend: null,
+    model: null,
+    structure_only: false,
+    max_file_head_bytes: 4096,
+    dedupe: 'none',
+    top_n: 3,
   },
 };
 
@@ -115,12 +134,15 @@ export function parseDuration(s: string | undefined): number {
 
 // Qwen+GigaCode slice Task 8: `'harness'` joins the strict allowlist. Unknown
 // top-level keys are STILL rejected — this is an enumeration, not a wildcard.
+// Closed-loop MVP Task 2: `'synthesizer'` joins the allowlist; its sub-fields
+// are range/enum-checked in `validateConfig` below.
 const KNOWN_TOP_KEYS = new Set([
   'harness',
   'detector',
   'areas',
   'docs_dirs',
   'diagnose',
+  'synthesizer',
 ]);
 
 const HARNESS_IDS: readonly HarnessId[] = [
@@ -268,6 +290,41 @@ function validateConfig(cfg: Config): void {
   if (dg.score_floor < 0 || dg.score_floor > 100) {
     throw new ConfigError(
       `diagnose.score_floor must be in [0,100], got ${dg.score_floor}`,
+    );
+  }
+  // Closed-loop MVP Task 2: prose-emission confidence floor. Mirrors the other
+  // diagnose share-floors (range ∈ [0,1]) — causes below this floor produce
+  // frontmatter-only proposals with no body.
+  if (dg.confidence_floor_for_prose < 0 || dg.confidence_floor_for_prose > 1) {
+    throw new ConfigError(
+      `diagnose.confidence_floor_for_prose must be in [0,1], got ${dg.confidence_floor_for_prose}`,
+    );
+  }
+  // Closed-loop MVP Task 2: synthesizer block validation. `dedupe` is a closed
+  // enum; `max_file_head_bytes`/`top_n` are positive integers; `backend` must
+  // be a string or null (deep-merge would otherwise let a YAML number slip
+  // through as the backend id and break dispatch in a later task). `model` is
+  // not range-checked (free-form string|null) — it is only forwarded to the
+  // backend selected by `backend`.
+  const syn = cfg.synthesizer;
+  if (syn.dedupe !== 'none' && syn.dedupe !== 'tfidf') {
+    throw new ConfigError(
+      `synthesizer.dedupe must be one of none, tfidf, got ${JSON.stringify(syn.dedupe)}`,
+    );
+  }
+  if (syn.max_file_head_bytes < 1) {
+    throw new ConfigError(
+      `synthesizer.max_file_head_bytes must be >= 1, got ${syn.max_file_head_bytes}`,
+    );
+  }
+  if (syn.top_n < 1) {
+    throw new ConfigError(
+      `synthesizer.top_n must be >= 1, got ${syn.top_n}`,
+    );
+  }
+  if (syn.backend !== null && typeof syn.backend !== 'string') {
+    throw new ConfigError(
+      `synthesizer.backend must be a string or null, got ${typeof syn.backend}`,
     );
   }
 }

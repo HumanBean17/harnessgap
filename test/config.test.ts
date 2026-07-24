@@ -164,6 +164,9 @@ describe('docs_dirs and diagnose config (Slice 4 Task 1)', () => {
       test_share_floor: 0.5,
       code_share_floor: 0.5,
       score_floor: 70,
+      // Closed-loop MVP: prose-emission confidence floor (Task 1 default;
+      // Task 2 adds the [0,1] range check in validateConfig).
+      confidence_floor_for_prose: 0.6,
     });
   });
 
@@ -198,8 +201,8 @@ describe('docs_dirs and diagnose config (Slice 4 Task 1)', () => {
     expect(cfg.diagnose.score_floor).toBe(70);
   });
 
-  it('loadConfig(path) with unknown top-level key synthesizer: throws ConfigError', () => {
-    const path = writeTmpConfig('synthesizer:\n  enabled: true\n');
+  it('loadConfig(path) with unknown top-level key frobnicate: throws ConfigError', () => {
+    const path = writeTmpConfig('frobnicate: 1\n');
     expect(() => loadConfig(path)).toThrow(ConfigError);
   });
 
@@ -326,5 +329,138 @@ describe('harness config key (Qwen+GigaCode slice Task 8)', () => {
   it('loadConfig(path) with an unknown top-level key still throws ConfigError (allowlist behavior unchanged)', () => {
     const path = writeTmpConfig('totally-bogus: 1\n');
     expect(() => loadConfig(path)).toThrow(ConfigError);
+  });
+});
+
+describe('synthesizer config + prose floor (Closed-loop MVP Task 2)', () => {
+  it('DEFAULT_CONFIG.synthesizer equals the verbatim spec object', () => {
+    expect(DEFAULT_CONFIG.synthesizer).toEqual({
+      backend: null,
+      model: null,
+      structure_only: false,
+      max_file_head_bytes: 4096,
+      dedupe: 'none',
+      top_n: 3,
+    });
+  });
+
+  it('loadConfig() with no file returns synthesizer defaults + confidence_floor_for_prose === 0.6', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'harnessgap-synth-defaults-'));
+    const originalCwd = process.cwd();
+    try {
+      process.chdir(dir);
+      const cfg = loadConfig();
+      expect(cfg.synthesizer.top_n).toBe(3);
+      expect(cfg.synthesizer.dedupe).toBe('none');
+      expect(cfg.synthesizer.backend).toBeNull();
+      expect(cfg.synthesizer.model).toBeNull();
+      expect(cfg.synthesizer.structure_only).toBe(false);
+      expect(cfg.synthesizer.max_file_head_bytes).toBe(4096);
+      expect(cfg.diagnose.confidence_floor_for_prose).toBe(0.6);
+    } finally {
+      process.chdir(originalCwd);
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('loadConfig(path) accepts synthesizer as a known top-level key (deep-merges top_n: 5)', () => {
+    const path = writeTmpConfig('synthesizer:\n  top_n: 5\n');
+    const cfg = loadConfig(path);
+    expect(cfg.synthesizer.top_n).toBe(5);
+    // untouched defaults preserved
+    expect(cfg.synthesizer.dedupe).toBe('none');
+    expect(cfg.synthesizer.backend).toBeNull();
+    expect(cfg.synthesizer.max_file_head_bytes).toBe(4096);
+  });
+
+  it('throws ConfigError naming dedupe when synthesizer.dedupe is "embeddings"', () => {
+    const path = writeTmpConfig('synthesizer:\n  dedupe: embeddings\n');
+    try {
+      loadConfig(path);
+      throw new Error('expected loadConfig to throw');
+    } catch (e) {
+      expect(e).toBeInstanceOf(ConfigError);
+      expect((e as Error).message).toContain('dedupe');
+      expect((e as Error).message).toContain('embeddings');
+    }
+  });
+
+  it('throws ConfigError naming max_file_head_bytes when it is 0', () => {
+    const path = writeTmpConfig('synthesizer:\n  max_file_head_bytes: 0\n');
+    try {
+      loadConfig(path);
+      throw new Error('expected loadConfig to throw');
+    } catch (e) {
+      expect(e).toBeInstanceOf(ConfigError);
+      expect((e as Error).message).toContain('max_file_head_bytes');
+    }
+  });
+
+  it('throws ConfigError naming top_n when it is 0', () => {
+    const path = writeTmpConfig('synthesizer:\n  top_n: 0\n');
+    try {
+      loadConfig(path);
+      throw new Error('expected loadConfig to throw');
+    } catch (e) {
+      expect(e).toBeInstanceOf(ConfigError);
+      expect((e as Error).message).toContain('top_n');
+    }
+  });
+
+  it('throws ConfigError naming backend when it is a number (must be string|null)', () => {
+    const path = writeTmpConfig('synthesizer:\n  backend: 5\n');
+    try {
+      loadConfig(path);
+      throw new Error('expected loadConfig to throw');
+    } catch (e) {
+      expect(e).toBeInstanceOf(ConfigError);
+      expect((e as Error).message).toContain('backend');
+    }
+  });
+
+  it('accepts synthesizer.backend as a string (anthropic) and dedupe: tfidf', () => {
+    const path = writeTmpConfig(
+      'synthesizer:\n  backend: anthropic\n  dedupe: tfidf\n',
+    );
+    const cfg = loadConfig(path);
+    expect(cfg.synthesizer.backend).toBe('anthropic');
+    expect(cfg.synthesizer.dedupe).toBe('tfidf');
+  });
+
+  it('throws ConfigError when diagnose.confidence_floor_for_prose is 1.5 (must be in [0,1])', () => {
+    const path = writeTmpConfig(
+      'diagnose:\n  confidence_floor_for_prose: 1.5\n',
+    );
+    try {
+      loadConfig(path);
+      throw new Error('expected loadConfig to throw');
+    } catch (e) {
+      expect(e).toBeInstanceOf(ConfigError);
+      expect((e as Error).message).toContain('confidence_floor_for_prose');
+    }
+  });
+
+  it('throws ConfigError when diagnose.confidence_floor_for_prose is -0.1 (must be in [0,1])', () => {
+    const path = writeTmpConfig(
+      'diagnose:\n  confidence_floor_for_prose: -0.1\n',
+    );
+    try {
+      loadConfig(path);
+      throw new Error('expected loadConfig to throw');
+    } catch (e) {
+      expect(e).toBeInstanceOf(ConfigError);
+      expect((e as Error).message).toContain('confidence_floor_for_prose');
+    }
+  });
+
+  it('accepts diagnose.confidence_floor_for_prose at the [0,1] boundaries (0 and 1)', () => {
+    const path0 = writeTmpConfig(
+      'diagnose:\n  confidence_floor_for_prose: 0\n',
+    );
+    expect(loadConfig(path0).diagnose.confidence_floor_for_prose).toBe(0);
+    const path1 = writeTmpConfig(
+      'diagnose:\n  confidence_floor_for_prose: 1\n',
+    );
+    expect(loadConfig(path1).diagnose.confidence_floor_for_prose).toBe(1);
   });
 });

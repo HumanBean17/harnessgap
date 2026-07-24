@@ -232,6 +232,15 @@ export interface StruggleRecord {
   event_count: number;
   areas: { key: string; weight: number }[];
   signals: SignalValues;
+  // Closed-loop MVP (always-on): doc-read events and doc-injection events
+  // observed in this session. Required (no `?`) — the detector populates
+  // these on every record, empty when none were observed — so the
+  // synthesizer/fact-check stages can rely on them without a sentinel. This
+  // is deliberately NOT under the `evidence?`/`diagnoses?` conditional-opt
+  // pattern: those remain absent in default output, while docs_read /
+  // docs_injected are part of the always-emitted shape.
+  docs_read: DocRead[];
+  docs_injected: DocInjection[];
   // Slice 4 (Diagnoser): populated only under `--diagnose`; absent otherwise
   // so default output stays byte-identical.
   evidence?: SessionEvidence;
@@ -313,6 +322,15 @@ export interface Config {
   // Slice 4 (Diagnoser) config. `docs_dirs` is the list of repo-relative
   // paths searched for doc-existence grounding; `diagnose` holds the rule
   // floors used by the classifier (§5.4, §6).
+  //
+  // Closed-loop MVP: `docs_dirs` is consumed by BOTH (a) the Diagnoser
+  // (`gatherRepoContext`, which checks each path for doc-existence grounding
+  // when attributing causes) AND (b) the detector's doc-read/doc-injection
+  // scoping — a transcript read/edit whose normalized path falls under one of
+  // these dirs is classified as a doc read / doc injection and rolled up into
+  // `StruggleRecord.docs_read` / `docs_injected`. Keeping both consumers on
+  // the same list means "what counts as a doc" stays consistent across the
+  // diagnose and synthesize/fact-check stages.
   docs_dirs: string[];
   diagnose: {
     confidence_floor: number;
@@ -320,6 +338,28 @@ export interface Config {
     test_share_floor: number;
     code_share_floor: number;
     score_floor: number;
+    // Closed-loop MVP: minimum classifier confidence required before the
+    // synthesizer emits prose (frontmatter `body`) for a proposed doc. Causes
+    // below this floor produce frontmatter-only proposals (no body) so the
+    // review stage never sees low-confidence prose. Mirrors `confidence_floor`
+    // in spirit but gated on prose emission specifically.
+    confidence_floor_for_prose: number;
+  };
+  // Closed-loop MVP (Synthesizer) config. `backend`/`model` select the
+  // generation backend (`null` = structure-only / no external call);
+  // `structure_only` short-circuits to a frontmatter-only proposal with no
+  // body regardless of confidence; `max_file_head_bytes` caps how many bytes
+  // of a source file are fed to the synthesizer for grounding;
+  // `dedupe` selects the near-duplicate strategy (`none` = skip,
+  // `tfidf` = vectorize existing docs in `docs_dirs`); `top_n` bounds how
+  // many existing docs are returned as `nearest_existing` candidates.
+  synthesizer: {
+    backend: string | null;
+    model: string | null;
+    structure_only: boolean;
+    max_file_head_bytes: number;
+    dedupe: 'none' | 'tfidf';
+    top_n: number;
   };
 }
 
@@ -341,6 +381,110 @@ export type Cause =
   | 'refactor-flag'
   | 'inherent-complexity'
   | 'unclassified';
+
+// Closed-loop MVP foundation types (Synthesizer + Review). Field names are
+// contracts pinned to the closed-loop plan; later tasks import these verbatim.
+// Unlike the Diagnoser `evidence?`/`diagnoses?` conditional-optional fields
+// above, `StruggleRecord.docs_read` and `docs_injected` are ALWAYS-ON (the
+// detector populates them on every record, even when empty) so the
+// synthesizer/fact-check stages can rely on them without a sentinel.
+
+/**
+ * One observed doc-read event inside a session. `path` is repo-relative (or
+ * absolute when the transcript did not resolve to a repo root); `t` is the
+ * ISO8601 event timestamp from the normalized event stream. Always-on: the
+ * detector emits an empty array when no doc reads were observed.
+ */
+export interface DocRead {
+  path: string;
+  t: string;
+}
+
+/**
+ * One doc-injection event observed inside a session (an edit to a file under
+ * a docs dir, or a session-start auto-injection). `trigger` is the closed
+ * literal describing what caused the injection. Always-on: the detector
+ * emits an empty array when no injections were observed.
+ */
+export interface DocInjection {
+  path: string;
+  t: string;
+  trigger: 'edit' | 'start';
+}
+
+/**
+ * Synthesizer output describing a doc to create. The v1 closed loop only
+ * produces new-doc proposals (no edit/improve kind yet), so `kind` is pinned
+ * to the literal `'new-doc'` as a discriminant for later task unions.
+ *
+ *  - `path`: target repo-relative path under a `docs_dirs` entry.
+ *  - `frontmatter`: derived metadata block; `derived_from` is the list of
+ *    session ids the proposal was synthesized from, `unit` mirrors the
+ *    Diagnoser's `{kind:'area', key}` unit, `struggle_score` is the rolled-up
+ *    score in [0,1], `cause` reuses the Diagnoser {@link Cause} taxonomy,
+ *    `source_files` are the repo-relative paths used for grounding, and
+ *    `created` is an ISO8601 timestamp.
+ *  - `body`: the synthesized prose. May be empty when the synthesizer is in
+ *    `structure_only` mode or when classifier confidence is below
+ *    `diagnose.confidence_floor_for_prose`.
+ *  - `cited_symbols` / `referenced_paths`: the symbols and paths the body
+ *    actually cites (the fact-checker resolves these).
+ *  - `dedupe`: the near-duplicate decision — `nearest_existing` is a
+ *    repo-relative path or `null` when no candidate cleared the similarity
+ *    floor; `similarity` is optional (absent under `dedupe:'none'`);
+ *    `decision_rationale` is always present.
+ *  - `verification`: the fact-check outcome for this proposal's citations,
+ *    rolled up to three booleans. Populated by the Review stage.
+ */
+export interface Proposal {
+  kind: 'new-doc';
+  path: string;
+  frontmatter: {
+    derived_from: string[];
+    unit: { kind: 'area'; key: string };
+    struggle_score: number;
+    cause: Cause;
+    source_files: string[];
+    created: string;
+  };
+  body: string;
+  cited_symbols: string[];
+  referenced_paths: string[];
+  dedupe: {
+    nearest_existing: string | null;
+    similarity?: number;
+    decision_rationale: string;
+  };
+  verification: {
+    cited_symbols_resolved: boolean;
+    paths_resolved: boolean;
+    shas_valid: boolean;
+  };
+}
+
+/**
+ * One failed fact-check assertion against a {@link Proposal}. `kind` is the
+ * closed literal describing what was checked; `resolved` flips to `true` once
+ * the synthesizer regenerates the proposal so the assertion now holds;
+ * `detail` is an optional human-readable note (e.g. why it failed or how it
+ * was resolved).
+ */
+export interface FactCheckFailure {
+  assertion: string;
+  kind: 'symbol' | 'path' | 'sha';
+  resolved: boolean;
+  detail?: string;
+}
+
+/**
+ * Fact-check outcome for a {@link Proposal}. `failures` lists every
+ * assertion that did not hold; an empty array means the proposal passed
+ * fact-check. Carried on the Review stage's result; later tasks consume this
+ * to decide whether to accept, regenerate, or reject the proposal.
+ */
+export interface FactCheckResult {
+  failures: FactCheckFailure[];
+}
 
 /**
  * Failed-exec counts by cmd-class and edited-file counts by file-class.
