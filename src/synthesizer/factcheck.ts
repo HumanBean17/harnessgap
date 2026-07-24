@@ -61,8 +61,13 @@ function toPosix(p: string): string {
  * True iff `relPath` equals or lives inside one of `docsDirs` (both
  * repo-relative). Uses POSIX normalization so `docs/architecture.md` is
  * recognized as under `docs`. An empty docsDirs list matches nothing.
+ *
+ * Exported (Task 12) so the Review stage reuses the SAME docs-dir confinement
+ * contract the fact-check gate applies pre-write — a proposal whose `path`
+ * escapes every `docs_dir` is refused by both stages for the same reason,
+ * with no logic drift.
  */
-function isUnderDocsDir(relPath: string, docsDirs: string[]): boolean {
+export function isUnderDocsDir(relPath: string, docsDirs: string[]): boolean {
   const norm = toPosix(path.posix.normalize(relPath));
   for (const d of docsDirs) {
     const normD = toPosix(path.posix.normalize(d));
