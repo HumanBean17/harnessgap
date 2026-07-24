@@ -9,8 +9,9 @@ abandonment), and optionally closes the loop on the top friction areas.
 hit no network, and never shell out — transcripts never leave the machine. Cause
 attribution is opt-in via `scan --diagnose`.
 
-**Opt-in closed loop (Phase 2 MVP):** `synthesize` → `review` → `explain` crosses
-the write + subprocess boundary. `synthesize` writes new-doc proposals under
+**Opt-in closed loop (Phase 2 MVP):** `synthesize` and `review` cross
+the write + subprocess boundary (`explain` is stateless — local-only, like
+`scan`/`reflect`). `synthesize` writes new-doc proposals under
 `docs/_proposals/` and shells out to the agent's own print-mode CLI
 (`claude -p` / `qwen -p` / `gigacode -p`) to draft them — so derived evidence +
 size-capped repo file-heads leave the machine via that trusted subprocess, not
