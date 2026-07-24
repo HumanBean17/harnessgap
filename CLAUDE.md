@@ -37,5 +37,4 @@ fact-checked against HEAD and human-reviewed before it lands in `docs/`.
 - If the session touched `src/`, `test/`, or any `*.md` file, dispatch the
 `docs-watcher` subagent with the list of changed files before ending. Skip
 otherwise.
-- Not a single follow up or defereed item should be just mentioned in the mid of the conversation and then die in it. This leads to re-explore or just re-discover same items again and again. If you have follow up or deferred item - open github issue or leave a note in design doc (if you're on a greenfield project and implementing a big design doc). 
-- 
+- Not a single follow up or deferred item should be just mentioned in the mid of the conversation and then die in it. This leads to re-explore or just re-discover same items again and again. If you have follow up or deferred item - open github issue or leave a note in design doc (if you're on a greenfield project and implementing a big design doc).

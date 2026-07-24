@@ -12,8 +12,9 @@ nothing, installs nothing, persists nothing**, hits no network, and never shells
 out — it reads transcripts (under `~/.claude/projects/` by default; `--harness
 <id>` selects Qwen Code or GigaCode) and prints a leaderboard to stdout. Cause
 attribution is available as an opt-in via `scan --diagnose`. The opt-in **closed
-loop** (`synthesize` / `review` / `explain`) crosses the write + subprocess
-boundary — see [Closed loop](#closed-loop-synthesize--review--explain) below.
+loop** (`synthesize` / `review`) crosses the write + subprocess boundary;
+`explain` is stateless and local-only — see
+[Closed loop](#closed-loop-synthesize--review--explain) below.
 
 For a one-page summary see [README.md](../README.md). For internals see
 [ARCHITECTURE.md](ARCHITECTURE.md). For calibration honesty (precision is

@@ -10,9 +10,9 @@ an agent to the right doc before editing.
 The **default `scan` path is stateless and detection-only**: it writes nothing,
 installs nothing, persists nothing, hits no network, and never shells out — it
 only prints a leaderboard to stdout. Cause attribution is available as an opt-in
-via `scan --diagnose`. The opt-in **closed loop** (`synthesize` / `review` /
-`explain`) crosses the write + subprocess boundary — see
-[Closed loop](#closed-loop-synthesize--review--explain) below.
+via `scan --diagnose`. The opt-in **closed loop** (`synthesize` / `review`)
+crosses the write + subprocess boundary; `explain` is stateless and local-only
+— see [Closed loop](#closed-loop-synthesize--review--explain) below.
 
 > **Full manual:** [docs/CONSUMER_GUIDE.md](docs/CONSUMER_GUIDE.md) — output formats, scoring modes, calibration, FAQ. **Internals:** [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md). **Calibration honesty:** [docs/CALIBRATION.md](docs/CALIBRATION.md).
 
@@ -194,9 +194,10 @@ for the pipeline seam + fail-open + privacy contract.
 ## Closed loop (`synthesize` / `review` / `explain`)
 
 The opt-in closed loop turns a flagged area into a reviewed doc proposal and
-routes future sessions to the right doc. These commands are **opt-in and cross
-the write + subprocess boundary** — unlike `scan` / `reflect`, they are not part
-of the stateless default path.
+routes future sessions to the right doc. These commands **cross the write +
+subprocess boundary** — unlike `scan` / `reflect` / `explain`, `synthesize` and
+`review` are not part of the stateless default path. `explain` is local-only
+(stateless: no writes, no subprocess).
 
 ```
 harnessgap scan --diagnose        # detect → diagnose (find doc/config-doc areas)
