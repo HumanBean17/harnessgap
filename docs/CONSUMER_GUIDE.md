@@ -117,8 +117,8 @@ harnessgap scan --limit 50
 ## Configuration (`.harnessgap.yml`)
 
 Optional. `scan` runs with built-in defaults if no file is present. The file is a
-YAML object with five top-level keys — `harness`, `detector`, `areas`,
-`docs_dirs`, and `diagnose`. Anything else is **rejected**. Values are
+YAML object with six top-level keys — `harness`, `detector`, `areas`,
+`docs_dirs`, `diagnose`, and `synthesizer`. Anything else is **rejected**. Values are
 deep-merged over the defaults (arrays replace, they do not concatenate).
 
 ```yaml
@@ -172,7 +172,7 @@ diagnose:                            # cause-rule floors (Slice 4); v1 priors, c
   score_floor: 70                    # mean-score bar for the inherent-complexity residual
 ```
 
-Keys not shown here (`synthesizer`, `router`, `tasks`, `repo`) are **not**
+Keys not shown here (`router`, `tasks`, `repo`) are **not**
 shipped and will be rejected.
 
 ---
