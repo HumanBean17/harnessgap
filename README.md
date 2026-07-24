@@ -120,6 +120,7 @@ auto-written to the repo**.
 | --- | --- |
 | `--transcript <path>` | Reflect on one given transcript file (the per-stop hook path). |
 | `--latest` | Reflect on the most-recent finished session for `--repo` (the manual `/reflect` path). |
+| `--session <id>` | Reflect on the session whose id matches a transcript **filename stem** (e.g. `--session abc123`). Discovered under `--harness-dir`; ignores `--repo` (ids are unique per harness dir). Mutually exclusive with `--transcript`/`--latest`. |
 | `--repo <path>` | Target repo toplevel, used with `--latest` (resolved to the project's main repo, like `scan`). |
 | `--exclude-session <id>` | Exclude a session id, used with `--latest`. |
 | `--stop-hook-active` | Mark the Claude Code Stop hook as already active (short-circuit to allow). |

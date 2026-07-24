@@ -482,10 +482,13 @@ no new network surface.
 
 ### `runReflect` (`src/pipeline.ts`)
 
-The n=1 analog of `runScan`. Two resolution modes feed one shared detect+format
+The n=1 analog of `runScan`. Three resolution modes feed one shared detect+format
 step:
 
 - **`--transcript <path>`** — stream one given file (the per-stop hook path; cheap).
+- **`--session <id>`** — discover every transcript, match the one whose filename
+  stem === `id`, and stream it; throws on zero or >1 matches (a wrong/colliding id
+  is a user error, not fail-open). Ignores `--repo` (ids are unique per harness dir).
 - **`--latest --repo <path>`** — discover every transcript under `claudeDir`,
   keep those whose resolved main repo matches, drop `--exclude-session`, and pick
   the max-`started_at` (the manual `/reflect` path; same order of cost as scan).
@@ -498,7 +501,8 @@ true)` (bootstrap forced at n=1), producing one `StruggleRecord`.
 Fail-open throughout: a null envelope (`--latest` found nothing), an unresolvable
 repo, **or** a thrown detect step all degrade to a degenerate `trip:false` finding
 — the hook-stop formatter renders `{}`, so the Stop hook never reads a wrapper
-error as a block. Only `loadConfig`/arg errors throw.
+error as a block. Only `loadConfig`/arg errors throw, and `--session` lookups
+that miss or collide.
 
 ### Output forms (`src/output/hook.ts`)
 

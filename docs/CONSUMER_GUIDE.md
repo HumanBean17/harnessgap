@@ -377,6 +377,7 @@ The agent presents the recommendation in-session and the user acts on it —
 | --- | --- | --- |
 | `--transcript <path>` | — | Reflect on one given transcript file (the per-stop hook path; cheap). |
 | `--latest` | off | Reflect on the most-recent finished session for `--repo` (the manual `/reflect` path). |
+| `--session <id>` | — | Reflect on the session whose id matches a transcript **filename stem** (e.g. `--session abc123`). Discovered under `--harness-dir`; ignores `--repo` (ids are unique per harness dir). Mutually exclusive with `--transcript`/`--latest`. |
 | `--repo <path>` | main repo of the cwd | Target repo toplevel, used with `--latest` (resolved to the project's main repo). |
 | `--exclude-session <id>` | — | Exclude a session id, used with `--latest`. |
 | `--stop-hook-active` | off | Mark the Claude Code Stop hook as already active (short-circuit to allow). |
