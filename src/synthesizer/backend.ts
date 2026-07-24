@@ -55,6 +55,13 @@ export interface SpawnedChild {
   stdout: Readable;
   stderr: Readable;
   on(event: string | symbol, listener: (...args: unknown[]) => void): unknown;
+  /**
+   * Best-effort signal delivery to the child. OPTIONAL so minimal test fakes
+   * can omit it; the real `child_process.spawn` return always provides it.
+   * `runBackend`'s hang watchdog calls this with SIGTERM (optional chaining)
+   * so a fake that doesn't model `kill` is still structurally compatible.
+   */
+  kill?(signal?: string): boolean;
 }
 
 /**
@@ -69,10 +76,22 @@ export type SpawnFn = (
 ) => SpawnedChild;
 
 /**
+ * Hard ceiling a backend subprocess may run before `runBackend` declares it
+ * hung and SIGTERMs it. Generous MVP default (120 s) — print-mode model calls
+ * can legitimately take a while on a cold/large prompt, but an indefinite stall
+ * (rate-limit, network, stdin handshake) must not hang `synthesize` forever.
+ * Exposed as an opt-in `timeoutMs` on `runBackend` mainly so tests can shrink
+ * it; production callers leave it at this default.
+ */
+const BACKEND_TIMEOUT_MS = 120_000;
+
+/**
  * Wrap node's real `child_process.spawn` to satisfy `SpawnFn`. Forces
  * `stdio:'pipe'` so stdin/stdout/stderr are present (asserted for the type
  * system; unreachable otherwise). The returned `on` is `child.on` bound to the
- * real child so `'error'`/`'close'`/signal events propagate unchanged.
+ * real child so `'error'`/`'close'`/signal events propagate unchanged, and
+ * `kill` is `child.kill` bound so the hang watchdog can actually signal the
+ * subprocess.
  */
 const defaultSpawn: SpawnFn = (command, args, options) => {
   const child = spawn(command, args, { ...options, stdio: ['pipe', 'pipe', 'pipe'] });
@@ -85,6 +104,7 @@ const defaultSpawn: SpawnFn = (command, args, options) => {
     stdout: child.stdout,
     stderr: child.stderr,
     on: child.on.bind(child) as SpawnedChild['on'],
+    kill: child.kill.bind(child) as SpawnedChild['kill'],
   };
 };
 
@@ -151,12 +171,18 @@ function splitBackend(s: string): readonly [string, string[]] {
  * on any of:
  *   - the child emitting an `'error'` event (e.g. ENOENT — binary not found);
  *   - non-zero exit code (or null — signal-killed);
- *   - empty stdout on a 0-exit (treated as a backend malfunction).
+ *   - empty stdout on a 0-exit (treated as a backend malfunction);
+ *   - the backend running longer than `timeoutMs` (hang watchdog): the child is
+ *     SIGTERM'd (best-effort — a fake may not implement `kill`) and the promise
+ *     rejects, so `synthesize` degrades to a digest entry instead of hanging
+ *     forever on a rate-limited / network-stalled / stdin-handshake-stuck model.
  *
- * Stderr is captured and folded into the non-zero-exit error message so a
- * rate-limited or misconfigured backend surfaces a useful diagnostic. The
- * optional `spawnFn` seam defaults to the real `child_process.spawn` wrapper;
- * tests pass a fake to avoid firing a real model call.
+ * The watchdog defaults to {@link BACKEND_TIMEOUT_MS}; `timeoutMs` is exposed
+ * mainly so tests can shrink it. Stderr is captured and folded into the
+ * non-zero-exit error message so a rate-limited or misconfigured backend
+ * surfaces a useful diagnostic. The optional `spawnFn` seam defaults to the
+ * real `child_process.spawn` wrapper; tests pass a fake to avoid firing a real
+ * model call.
  */
 export function runBackend(opts: {
   cmd: string;
@@ -164,8 +190,10 @@ export function runBackend(opts: {
   prompt: string;
   cwd: string;
   spawnFn?: SpawnFn;
+  timeoutMs?: number;
 }): Promise<string> {
   const spawnFn = opts.spawnFn ?? defaultSpawn;
+  const timeoutMs = opts.timeoutMs ?? BACKEND_TIMEOUT_MS;
   return new Promise<string>((resolve, reject) => {
     let child: SpawnedChild;
     try {
@@ -178,17 +206,37 @@ export function runBackend(opts: {
     const stdoutChunks: Buffer[] = [];
     let stderrText = '';
     let settled = false;
+    let timer: ReturnType<typeof setTimeout> | null = null;
 
+    // Any settling path clears the watchdog so a late terminal event can't
+    // race a rejection and a settled promise can't be re-rejected.
+    const clearWatchdog = (): void => {
+      if (timer !== null) {
+        clearTimeout(timer);
+        timer = null;
+      }
+    };
     const fail = (err: Error): void => {
       if (settled) return;
       settled = true;
+      clearWatchdog();
       reject(err);
     };
     const ok = (stdout: string): void => {
       if (settled) return;
       settled = true;
+      clearWatchdog();
       resolve(stdout);
     };
+
+    // Hang watchdog: if no terminal event fires within timeoutMs, SIGTERM the
+    // child (best-effort via optional chaining — a minimal fake may omit kill)
+    // and reject. The rejection flows into the orchestrator's backend-error
+    // try/catch → digest entry, so no other change is needed for fail-open.
+    timer = setTimeout(() => {
+      child.kill?.('SIGTERM');
+      fail(new Error(`${opts.cmd} backend timed out after ${timeoutMs}ms`));
+    }, timeoutMs);
 
     // Collect stdout bytes; collect stderr text for the error message.
     child.stdout.on('data', (chunk: Buffer | string) => {
